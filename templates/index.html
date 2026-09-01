@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MEI E2 Escalation Logging & Analytics Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+
+<body>
+
+    <!-- Top Header Bar -->
+    <header class="header-bar" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; padding: 10px 20px; gap: 10px;">
+        <div class="header-brand" style="display: flex; align-items: center; gap: 10px; white-space: nowrap; flex-shrink: 0;">
+            <div class="brand-icon">⚡</div>
+            <div class="brand-title">
+                <h1 style="font-size: 1.1rem; margin: 0; line-height: 1.2;">MEI E2 Escalation System</h1>
+                <p style="font-size: 0.72rem; margin: 0; color: var(--text-muted);">Factory Quality & Escalation Analytics Platform</p>
+            </div>
+        </div>
+        <div class="header-stats" style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap; flex-shrink: 0;">
+            <!-- Shift Selector -->
+            <div class="header-select-group" style="display: flex; align-items: center; gap: 4px; background: rgba(255, 255, 255, 0.05); padding: 4px 8px; border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.1); white-space: nowrap;">
+                <label for="selShift" style="font-size: 0.72rem; color: var(--text-muted); font-weight: 700;">SHIFT:</label>
+                <select id="selShift" class="input-control" style="padding: 2px 6px; font-size: 0.78rem; height: auto; min-width: 80px; background: transparent; border: none; color: #fff;">
+                    <option value="Shift A" style="background: #111827;">Shift A</option>
+                    <option value="Shift B" style="background: #111827;">Shift B</option>
+                    <option value="Shift C" style="background: #111827;">Shift C</option>
+                </select>
+            </div>
+
+            <!-- Shift IC Selector + Gear Button -->
+            <div class="header-select-group" style="display: flex; align-items: center; gap: 4px; background: rgba(255, 255, 255, 0.05); padding: 4px 8px; border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.1); white-space: nowrap;">
+                <label for="selShiftIc" style="font-size: 0.72rem; color: var(--text-muted); font-weight: 700;">SHIFT IC:</label>
+                <select id="selShiftIc" class="input-control" style="padding: 2px 6px; font-size: 0.78rem; height: auto; min-width: 100px; background: transparent; border: none; color: #fff;" required>
+                    <!-- Rendered dynamically by JS -->
+                </select>
+                <button type="button" class="btn-manage-icon" onclick="openOptionsModal('shift_ic', 'SHIFT IC (SUPERVISOR)')" title="Edit/Add Options" style="font-size: 0.8rem; padding: 1px 3px; border: none; background: transparent; cursor: pointer;">⚙️</button>
+            </div>
+
+            <!-- E2 Operator Selector + Gear Button -->
+            <div class="header-select-group" style="display: flex; align-items: center; gap: 4px; background: rgba(255, 255, 255, 0.05); padding: 4px 8px; border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.1); white-space: nowrap;">
+                <label for="selOperator" style="font-size: 0.72rem; color: var(--text-muted); font-weight: 700;">OPERATOR:</label>
+                <select id="selOperator" class="input-control" style="padding: 2px 6px; font-size: 0.78rem; height: auto; min-width: 95px; background: transparent; border: none; color: #fff;" required>
+                    <!-- Rendered dynamically by JS -->
+                </select>
+                <button type="button" class="btn-manage-icon" onclick="openOptionsModal('operator', 'E2 OPERATOR')" title="Edit/Add Options" style="font-size: 0.8rem; padding: 1px 3px; border: none; background: transparent; cursor: pointer;">⚙️</button>
+            </div>
+
+            <!-- Database Connection Status Badge -->
+            <div class="stat-pill badge-online" id="lblDbStatus" onclick="promptSetAdaptivePassword()" style="cursor: pointer; white-space: nowrap; font-size: 0.78rem; padding: 4px 10px;" title="Click to set/update Adaptive session password">
+                🟢 MySQL Connected (8ms)
+            </div>
+
+            <!-- Theme Toggle Button -->
+            <button class="btn-theme-toggle" id="btnThemeToggle" onclick="toggleTheme()" title="Toggle Light/Dark Theme" style="padding: 6px; width: 32px; height: 32px; justify-content: center; font-size: 1.1rem; border-radius: 50%;">
+                ☀️
+            </button>
+        </div>
+    </header>
+
+    <!-- 2-Tab Navigation Bar -->
+    <nav class="tab-navigation">
+        <button class="tab-btn active" id="btnTab1" onclick="switchTab('tab1')">
+            📝 Tab 1: Escalation Logging & Entries
+        </button>
+        <button class="tab-btn" id="btnTab2" onclick="switchTab('tab2')">
+            📊 Tab 2: Analytics & Trends
+        </button>
+    </nav>
+
+    <!-- TAB 1: ESCALATION LOGGING & ENTRIES -->
+    <main id="tab1" class="tab-content active">
+        <div class="logging-grid">
+
+            <!-- Left Panel: Focal Barcode Scanner & Entry Form -->
+            <div class="glass-card">
+                <div class="card-header">
+                    <h2>🔍 Barcode Scanner</h2>
+                    <span class="badge-status badge-ok">Ready to Scan</span>
+                </div>
+
+                <!-- Escalation Logging Form -->
+                <form id="frmEscalation" onsubmit="submitEscalation(event)">
+                    <!-- Focal Scanner Box -->
+                    <div class="scanner-box" id="scannerBox">
+                        <div class="form-group" style="margin-bottom:0;">
+                            <label for="txtScanTray">SCAN TRAY ID (BARCODE)</label>
+                            <input type="text" id="txtScanTray" class="input-control scanner-input"
+                                placeholder="CT18518" autofocus autocomplete="off">
+                            <div id="lblTrayWarning" style="display: none; color: #FF4B2B; font-size: 0.8rem; font-weight: 700; margin-top: 6px;">
+                                ⚠️ Please enter a Tray ID before logging entry.
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                        <div class="form-group">
+                            <div class="label-with-manage">
+                                <label for="selFailCategory">FAIL CATEGORY</label>
+                                <button type="button" class="btn-manage-icon"
+                                    onclick="openOptionsModal('fail_category', 'FAIL CATEGORY')"
+                                    title="Edit/Add Options">⚙️</button>
+                            </div>
+                            <select id="selFailCategory" class="input-control" onchange="onFailCategoryChange()"
+                                required>
+                                <!-- Rendered dynamically by JS -->
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <div class="label-with-manage">
+                                <label for="selStatus">STATUS</label>
+                                <button type="button" class="btn-manage-icon"
+                                    onclick="openOptionsModal('status', 'STATUS')" title="Edit/Add Options">⚙️</button>
+                            </div>
+                            <select id="selStatus" class="input-control" required>
+                                <!-- Rendered dynamically by JS -->
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Dynamic Container: Barcode of Failed Items Received -->
+                    <div id="failedBarcodesContainer" class="failed-barcodes-box">
+                        <!-- Rendered dynamically by JS on fail category change -->
+                    </div>
+
+                    <div class="form-group">
+                        <div class="label-with-manage">
+                            <label for="selIssue">PRIMARY ISSUE / CAUSE</label>
+                            <button type="button" class="btn-manage-icon"
+                                onclick="openOptionsModal('issue', 'PRIMARY ISSUE / CAUSE')" title="Edit/Add Options">⚙️</button>
+                        </div>
+                        <select id="selIssue" class="input-control" onchange="onIssueChange()" required>
+                            <!-- Rendered dynamically by JS -->
+                        </select>
+                        <!-- Dynamic Custom Issue Input Box (Appears when OTHER is selected) -->
+                        <div id="otherIssueContainer" style="display: none; margin-top: 8px;">
+                            <label for="txtOtherIssue" style="color: var(--cyan-accent); font-weight: 600; font-size: 0.8rem; margin-bottom: 4px; display: block;">💬 SPECIFY CUSTOM ISSUE / CAUSE DETAILS</label>
+                            <input type="text" id="txtOtherIssue" class="input-control" placeholder="Type custom cause details here...">
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="txtMachine">MACHINE TAG</label>
+                        <input type="text" id="txtMachine" class="input-control" placeholder="E2-01">
+                    </div>
+
+                    <button type="submit" class="btn-primary">
+                        ➕ LOG ESCALATION ENTRY
+                    </button>
+                </form>
+            </div>
+
+            <!-- Right Panel: Live Auto-Fetched DB Details Card -->
+            <div class="glass-card">
+                <div class="card-header">
+                    <h2>🗄️ Live DB Auto-Fetched Details</h2>
+                    <span class="badge-status badge-ok" id="lblQueryLatency">Live SQL Active</span>
+                </div>
+
+                <div class="db-details-grid">
+                    <div class="detail-item">
+                        <div class="detail-label">Fitting ID</div>
+                        <div class="detail-value" id="valFittingId">--</div>
+                    </div>
+                    <div class="detail-item">
+                        <div class="detail-label">Order ID</div>
+                        <div class="detail-value" id="valOrderId">--</div>
+                    </div>
+                    <div class="detail-item">
+                        <div class="detail-label">IS JIT</div>
+                        <div class="detail-value" id="valIsJit" style="color: var(--green-accent);">--</div>
+                    </div>
+                    <div class="detail-item">
+                        <div class="detail-label">FR TAG / TYPE</div>
+                        <div class="detail-value" id="valProcessingType" style="color: var(--amber-accent);">--</div>
+                    </div>
+                    <div class="detail-item">
+                        <div class="detail-label">Frame PID</div>
+                        <div class="detail-value" id="valFramePid">--</div>
+                    </div>
+                    <div class="detail-item">
+                        <div class="detail-label">Lens Index</div>
+                        <div class="detail-value" id="valLensIndex" style="color: var(--cyan-accent);">--</div>
+                    </div>
+                    <div class="detail-item" style="grid-column: span 2;">
+                        <div class="detail-label">Right Lens Barcode</div>
+                        <div class="detail-value" id="valRightLensBarcode">--</div>
+                    </div>
+                    <div class="detail-item" style="grid-column: span 2;">
+                        <div class="detail-label">Left Lens Barcode</div>
+                        <div class="detail-value" id="valLeftLensBarcode">--</div>
+                    </div>
+
+                    <!-- Right Lens Powers Row -->
+                    <div class="powers-badge-row"
+                        style="background: rgba(0, 242, 254, 0.08); border-color: rgba(0, 242, 254, 0.3);">
+                        <div style="font-weight: 700; color: var(--cyan-accent); font-size: 0.85rem; width: 100px;">
+                            RIGHT (R)</div>
+                        <div class="power-col">
+                            <span>SPH</span>
+                            <strong id="valRightSph">--</strong>
+                        </div>
+                        <div class="power-col">
+                            <span>CYL</span>
+                            <strong id="valRightCyl">--</strong>
+                        </div>
+                        <div class="power-col">
+                            <span>AXIS</span>
+                            <strong id="valRightAxis">--</strong>
+                        </div>
+                        <div class="power-col">
+                            <span>ADDN</span>
+                            <strong id="valRightAddn">--</strong>
+                        </div>
+                    </div>
+
+                    <!-- Left Lens Powers Row -->
+                    <div class="powers-badge-row"
+                        style="background: rgba(79, 172, 254, 0.08); border-color: rgba(79, 172, 254, 0.3);">
+                        <div style="font-weight: 700; color: #4FACFE; font-size: 0.85rem; width: 100px;">LEFT (L)</div>
+                        <div class="power-col">
+                            <span>SPH</span>
+                            <strong id="valLeftSph">--</strong>
+                        </div>
+                        <div class="power-col">
+                            <span>CYL</span>
+                            <strong id="valLeftCyl">--</strong>
+                        </div>
+                        <div class="power-col">
+                            <span>AXIS</span>
+                            <strong id="valLeftAxis">--</strong>
+                        </div>
+                        <div class="power-col">
+                            <span>ADDN</span>
+                            <strong id="valLeftAddn">--</strong>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+
+
+        <!-- Data Table & 1-Click Export Section -->
+        <div class="glass-card">
+            <div class="card-header">
+                <h2>📋 Active Escalation Log Records</h2>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <button type="button" onclick="triggerExport('excel')" class="btn-export-excel" style="cursor: pointer; border: none;">
+                        📥 EXPORT AS .XLSX
+                    </button>
+                    <button type="button" onclick="triggerExport('csv')" class="btn-export-csv" style="cursor: pointer; border: none;">
+                        📄 EXPORT AS .CSV
+                    </button>
+                </div>
+            </div>
+
+            <!-- Date & Time Filter & Search Toolbar -->
+            <div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 16px; background: rgba(255, 255, 255, 0.03); padding: 12px 16px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.08);">
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                    <label for="dtFilterStart" style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">FROM DATE & TIME</label>
+                    <div style="display: flex; align-items: center; gap: 4px;">
+                        <input type="datetime-local" id="dtFilterStart" class="input-control" style="padding: 6px 10px; font-size: 0.85rem; cursor: pointer;" onfocus="openPicker('dtFilterStart')" onclick="openPicker('dtFilterStart')" onchange="applyDateTimeFilter()">
+                        <button type="button" onclick="openPicker('dtFilterStart')" class="btn-manage-icon" title="Open Calendar & Time Picker" style="padding: 6px 10px; cursor: pointer;">📅</button>
+                    </div>
+                </div>
+
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                    <label for="dtFilterEnd" style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">TO DATE & TIME</label>
+                    <div style="display: flex; align-items: center; gap: 4px;">
+                        <input type="datetime-local" id="dtFilterEnd" class="input-control" style="padding: 6px 10px; font-size: 0.85rem; cursor: pointer;" onfocus="openPicker('dtFilterEnd')" onclick="openPicker('dtFilterEnd')" onchange="applyDateTimeFilter()">
+                        <button type="button" onclick="openPicker('dtFilterEnd')" class="btn-manage-icon" title="Open Calendar & Time Picker" style="padding: 6px 10px; cursor: pointer;">📅</button>
+                    </div>
+                </div>
+
+                <div style="display: flex; flex-direction: column; gap: 4px; flex-grow: 1; min-width: 200px;">
+                    <label for="txtSearchTable" style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">SEARCH RECORDS</label>
+                    <input type="text" id="txtSearchTable" class="input-control" style="padding: 6px 10px; font-size: 0.85rem;"
+                        placeholder="🔍 Search by Tray ID, Operator, Issue..." onkeyup="applyDateTimeFilter()">
+                </div>
+
+                <div style="display: flex; gap: 8px;">
+                    <button type="button" onclick="applyDateTimeFilter()" class="btn-primary" style="padding: 7px 14px; font-size: 0.85rem;">
+                        📅 APPLY FILTER
+                    </button>
+                    <button type="button" onclick="resetDateTimeFilter()" class="btn-secondary" style="padding: 7px 14px; font-size: 0.85rem; background: rgba(255, 255, 255, 0.1);">
+                        🔄 RESET
+                    </button>
+                </div>
+            </div>
+
+            <!-- Data Table -->
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Date & Time</th>
+                            <th>Shift</th>
+                            <th>Operator</th>
+                            <th>Tray ID</th>
+                            <th>Fitting ID</th>
+                            <th>IS JIT</th>
+                            <th>FR Tag</th>
+                            <th>Index</th>
+                            <th>Fail Category</th>
+                            <th>Issue Cause</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tblEscalationsBody">
+                        <!-- Populated dynamically via JS -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <!-- TAB 2: ANALYTICS & TRENDS -->
+    <main id="tab2" class="tab-content">
+        <!-- Analytics Toolbar & Upload Section -->
+        <div class="glass-card" style="margin-bottom: 20px; padding: 16px 20px;">
+            <div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between;">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <h2 style="font-size: 1.1rem; margin: 0; display: flex; align-items: center; gap: 8px;">
+                        📈 <span>Analytics Controls</span>
+                    </h2>
+                    <input type="file" id="fileImportExcelAnalytics" style="display: none;" accept=".xlsx,.xls,.csv" onchange="uploadImportExcel(this)">
+                    <button type="button" id="btnImportBtn2" onclick="document.getElementById('fileImportExcelAnalytics').click()" class="btn-secondary" style="cursor: pointer; border: none; background: rgba(0, 242, 254, 0.18); color: var(--cyan-accent); font-weight: 600; padding: 8px 16px; font-size: 0.85rem; border-radius: 6px;">
+                        📂 IMPORT EXCEL FOR ANALYTICS
+                    </button>
+                </div>
+
+                <!-- Date & Time Filter Range Selector for Analytics -->
+                <div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end;">
+                    <div style="display: flex; flex-direction: column; gap: 3px;">
+                        <label for="analyticsStart" style="font-size: 0.72rem; color: var(--text-muted); font-weight: 600;">FROM DATE & TIME</label>
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            <input type="datetime-local" id="analyticsStart" class="input-control" style="padding: 5px 10px; font-size: 0.82rem; cursor: pointer;" onfocus="openPicker('analyticsStart')" onclick="openPicker('analyticsStart')" onchange="loadAnalytics()">
+                            <button type="button" onclick="openPicker('analyticsStart')" class="btn-manage-icon" title="Open Calendar" style="padding: 5px 8px; cursor: pointer;">📅</button>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; flex-direction: column; gap: 3px;">
+                        <label for="analyticsEnd" style="font-size: 0.72rem; color: var(--text-muted); font-weight: 600;">TO DATE & TIME</label>
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            <input type="datetime-local" id="analyticsEnd" class="input-control" style="padding: 5px 10px; font-size: 0.82rem; cursor: pointer;" onfocus="openPicker('analyticsEnd')" onclick="openPicker('analyticsEnd')" onchange="loadAnalytics()">
+                            <button type="button" onclick="openPicker('analyticsEnd')" class="btn-manage-icon" title="Open Calendar" style="padding: 5px 8px; cursor: pointer;">📅</button>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 6px;">
+                        <button type="button" onclick="loadAnalytics()" class="btn-primary" style="padding: 6px 12px; font-size: 0.8rem;">
+                            ⚡ FILTER
+                        </button>
+                        <button type="button" onclick="resetAnalyticsDateFilter()" class="btn-secondary" style="padding: 6px 12px; font-size: 0.8rem; background: rgba(255,255,255,0.1);">
+                            🔄 RESET
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Uploaded File Visual Status Banner (Analytics Tab) -->
+            <div id="bannerAnalyticsImportInfo" style="display: none; margin-top: 14px; background: rgba(0, 242, 254, 0.1); border: 1px solid rgba(0, 242, 254, 0.3); border-radius: 8px; padding: 10px 16px; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 1.3rem;">📁</span>
+                    <div>
+                        <div style="font-weight: 700; color: var(--cyan-accent); font-size: 0.85rem;" id="lblAnalyticsImportFilename">Imported File: --</div>
+                        <div style="font-size: 0.78rem; color: var(--text-muted);" id="lblAnalyticsImportDetails">--</div>
+                    </div>
+                </div>
+                <button type="button" onclick="clearImportedData()" class="btn-secondary" style="padding: 4px 10px; font-size: 0.75rem; background: rgba(239, 68, 68, 0.2); color: #FCA5A5; border-color: rgba(239, 68, 68, 0.4);">
+                    🗑️ Clear Imported Data & Reset
+                </button>
+            </div>
+        </div>
+
+        <!-- Top KPI Scorecards -->
+        <div class="scorecards-grid">
+            <div class="kpi-card">
+                <div class="kpi-title" id="lblKpiTotalTitle">Total Escalations</div>
+                <div class="kpi-value" id="kpiTotal">0</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">NG Rate (%)</div>
+                <div class="kpi-value" id="kpiNgRate" style="color: var(--red-accent);">0%</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">Top Defect Issue</div>
+                <div class="kpi-value" id="kpiTopDefect" style="font-size: 1.1rem; color: var(--amber-accent);">--</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">Active Shift Volume <span id="lblActiveShiftName" style="color: var(--cyan-accent); font-size: 0.75rem;"></span></div>
+                <div class="kpi-value" id="kpiShiftVolume" style="color: var(--green-accent);">0</div>
+            </div>
+        </div>
+
+        <!-- Interactive Charts Grid -->
+        <div class="charts-grid" style="grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));">
+            <!-- 1. Top 7 Failure Reasons -->
+            <div class="glass-card">
+                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <h2>🎯 Top Failure Reasons</h2>
+                    <div class="chart-toggle-group">
+                        <button type="button" id="btnToggleIssuesDonut" class="chart-toggle-btn" onclick="switchChartType('issues', 'doughnut')">🍩 Donut</button>
+                        <button type="button" id="btnToggleIssuesBar" class="chart-toggle-btn active" onclick="switchChartType('issues', 'bar')">📊 Bar</button>
+                    </div>
+                </div>
+                <div style="max-width: 440px; margin: 0 auto;">
+                    <canvas id="chartTopIssuesCombined"></canvas>
+                </div>
+            </div>
+
+            <!-- 2. Maximum Failures Marked by Operator (With Shift Filter) -->
+            <div class="glass-card">
+                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <h2>👤 Operator Failure Volume</h2>
+                        <select id="selOperatorShiftFilter" class="input-control" style="width: auto; padding: 3px 8px; font-size: 0.78rem; background: rgba(0, 242, 254, 0.08); border-color: rgba(0, 242, 254, 0.3); color: var(--cyan-accent);" onchange="filterOperatorShift(this.value)">
+                            <option value="ALL">All Shifts</option>
+                            <option value="Shift A">Shift A</option>
+                            <option value="Shift B">Shift B</option>
+                            <option value="Shift C">Shift C</option>
+                        </select>
+                    </div>
+                    <div class="chart-toggle-group">
+                        <button type="button" id="btnToggleOpDonut" class="chart-toggle-btn" onclick="switchChartType('operators', 'doughnut')">🍩 Donut</button>
+                        <button type="button" id="btnToggleOpBar" class="chart-toggle-btn active" onclick="switchChartType('operators', 'bar')">📊 Bar</button>
+                    </div>
+                </div>
+                <div style="max-width: 440px; margin: 0 auto;">
+                    <canvas id="chartOperatorsCombined"></canvas>
+                </div>
+            </div>
+
+            <!-- 3. Shift-Wise Maximum Failures -->
+            <div class="glass-card">
+                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <h2>⏰ Shift-Wise Failures</h2>
+                    <div class="chart-toggle-group">
+                        <button type="button" id="btnToggleShiftDonut" class="chart-toggle-btn" onclick="switchChartType('shifts', 'doughnut')">🍩 Donut</button>
+                        <button type="button" id="btnToggleShiftBar" class="chart-toggle-btn active" onclick="switchChartType('shifts', 'bar')">📊 Bar</button>
+                    </div>
+                </div>
+                <div style="max-width: 440px; margin: 0 auto;">
+                    <canvas id="chartShiftsCombined"></canvas>
+                </div>
+            </div>
+
+            <!-- 4. Maximum Failed PIDs & Defect Causes -->
+            <div class="glass-card">
+                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <h2>🏷️ Maximum Failed PIDs & Causes</h2>
+                    <div class="chart-toggle-group">
+                        <button type="button" id="btnTogglePidDonut" class="chart-toggle-btn" onclick="switchChartType('pids', 'doughnut')">🍩 Donut</button>
+                        <button type="button" id="btnTogglePidBar" class="chart-toggle-btn active" onclick="switchChartType('pids', 'bar')">📊 Bar</button>
+                    </div>
+                </div>
+                <div style="max-width: 440px; margin: 0 auto;">
+                    <canvas id="chartPidsCombined"></canvas>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- MODAL DIALOG FOR DYNAMIC DROPDOWN OPTIONS MANAGEMENT (CRUD) -->
+    <div id="modalOptions" class="modal-overlay">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3 id="modalTitle">⚙️ Manage Dropdown Options</h3>
+                <button type="button" class="btn-close-modal" onclick="closeOptionsModal()">✖</button>
+            </div>
+
+            <div class="modal-body">
+                <!-- Add New Option Input Box -->
+                <div class="add-option-box">
+                    <input type="text" id="txtNewOption" class="input-control" placeholder="Type new option name...">
+                    <button type="button" class="btn-primary" style="width: auto; padding: 10px 18px;"
+                        onclick="addNewOption()">➕ Add Option</button>
+                </div>
+
+                <!-- Existing Options List -->
+                <div class="options-list-container" id="optionsList">
+                    <!-- Rendered dynamically via JS -->
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <button type="button" class="btn-secondary" onclick="closeOptionsModal()">Done</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL DIALOG FOR ADAPTIVE PASSWORD VERIFICATION & SYNC -->
+    <div id="modalPassword" class="modal-overlay">
+        <div class="modal-card" style="max-width: 440px;">
+            <div class="modal-header">
+                <h3>🔑 Verify Terminal Password</h3>
+                <button type="button" class="btn-close-modal" onclick="closePasswordModal()">✖</button>
+            </div>
+
+            <div class="modal-body">
+                <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 12px;">
+                    Paste the 8-character session password shown in your terminal window running <code>adaptive connect</code>:
+                </p>
+                <div class="form-group" style="margin-bottom: 12px;">
+                    <input type="text" id="txtAdaptivePassword" class="input-control" placeholder="9eze00pg" autofocus autocomplete="off" onkeydown="if(event.key==='Enter') submitAdaptivePassword()">
+                </div>
+                <div id="pwdStatusMsg" style="min-height: 24px; font-size: 0.85rem; font-weight: 600;"></div>
+            </div>
+
+            <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 8px;">
+                <button type="button" class="btn-secondary" onclick="closePasswordModal()">Cancel</button>
+                <button type="button" class="btn-primary" style="width: auto; padding: 8px 18px;" onclick="submitAdaptivePassword()">⚡ Verify & Connect</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+
+</html>
