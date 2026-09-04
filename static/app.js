@@ -435,7 +435,7 @@ async function triggerLookup(trayId) {
     lblLatency.className = 'badge-status badge-asrs';
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000);
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
 
     try {
         const res = await fetch(`/api/lookup/${encodeURIComponent(trayId)}`, { signal: controller.signal });
@@ -1113,7 +1113,45 @@ function updateHourlyChart() {
                     borderColor: isLight ? '#E2E8F0' : 'rgba(255,255,255,0.1)',
                     borderWidth: 1,
                     padding: 10,
-                    displayColors: false
+                    displayColors: false,
+                    callbacks: {
+                        label: function(context) {
+                            const val = context.parsed.y;
+                            if (val === 0) return 'Failures: 0';
+                            
+                            const totalDay = context.dataset.data.reduce((a, b) => a + b, 0);
+                            const perc = totalDay > 0 ? ((val / totalDay) * 100).toFixed(1) : 0;
+                            
+                            let lines = [`Failures: ${val} (${perc}% of total)`];
+                            
+                            const selOp = document.getElementById('selHourlyOperator')?.value || 'ALL';
+                            if (selOp === 'ALL' && rawHourlyData && rawHourlyData.operators) {
+                                lines.push('');
+                                lines.push('Operator Breakdown:');
+                                
+                                let opStats = [];
+                                for (const op in rawHourlyData.operators) {
+                                    const opCount = rawHourlyData.operators[op][context.dataIndex];
+                                    if (opCount > 0) {
+                                        opStats.push({ name: op, count: opCount });
+                                    }
+                                }
+                                
+                                opStats.sort((a, b) => b.count - a.count);
+                                
+                                const topOps = opStats.slice(0, 3);
+                                topOps.forEach(op => {
+                                    lines.push(`  • ${op.name}: ${op.count}`);
+                                });
+                                
+                                if (opStats.length > 3) {
+                                    const othersCount = opStats.slice(3).reduce((sum, op) => sum + op.count, 0);
+                                    lines.push(`  • OTHERS: ${othersCount}`);
+                                }
+                            }
+                            return lines;
+                        }
+                    }
                 }
             }
         },

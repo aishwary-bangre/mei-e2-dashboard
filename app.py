@@ -11,7 +11,8 @@ import threading
 import subprocess
 from flask import Flask, render_template, request, jsonify, send_file
 from flask_cors import CORS
-import pymysql
+import pymysql  # type: ignore
+import pymysql.cursors  # type: ignore
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 
@@ -575,7 +576,7 @@ def api_lookup_tray(tray_id):
         lens_index = ""
         lens_name = ""
         # Fetch Right Lens Power directly by its PID
-        if right_lens_pid and str(right_lens_pid).strip() not in ('', '0'):
+        if right_lens_pid and right_lens_pid.strip() not in ('', '0'):
             try:
                 cursor.execute("""
                     SELECT lens_index, sph, cyl, axis, ap AS addn, lensname 
@@ -596,7 +597,7 @@ def api_lookup_tray(tray_id):
                 print(f"[!] Right Power lookup warning: {pe}")
 
         # Fetch Left Lens Power directly by its PID (allows duplicate PIDs to apply to both)
-        if left_lens_pid and str(left_lens_pid).strip() not in ('', '0'):
+        if left_lens_pid and left_lens_pid.strip() not in ('', '0'):
             try:
                 cursor.execute("""
                     SELECT lens_index, sph, cyl, axis, ap AS addn, lensname 
@@ -963,6 +964,7 @@ def export_excel():
 
     wb = openpyxl.Workbook()
     ws = wb.active
+    assert ws is not None
     ws.title = "E2 Escalation"
 
     headers = [
@@ -1018,6 +1020,7 @@ def export_excel():
 
     # Sheet 2: Top Failure Reasons Summary
     ws_issues = wb.create_sheet(title="Failure Reasons Summary")
+    assert ws_issues is not None
     ws_issues.append(["Rank", "Failure Reason / Issue", "Total Failure Count", "Percentage (%)"])
     for col in range(1, 5):
         cell = ws_issues.cell(row=1, column=col)
@@ -1147,15 +1150,16 @@ def api_import_escalations():
         return jsonify({'success': False, 'error': 'No file uploaded'}), 400
 
     uploaded_file = request.files['file']
-    filename = uploaded_file.filename.lower()
+    filename = (uploaded_file.filename or '').lower()
 
     imported_records = []
     now = datetime.datetime.now()
 
     try:
         if filename.endswith('.xlsx') or filename.endswith('.xls'):
-            wb = openpyxl.load_workbook(uploaded_file, read_only=True, data_only=True)
+            wb = openpyxl.load_workbook(uploaded_file, read_only=True, data_only=True)  # type: ignore
             ws = wb.active
+            assert ws is not None
 
             header_row = [str(cell).strip().upper() if cell is not None else '' for cell in next(ws.iter_rows(values_only=True))]
             
