@@ -467,44 +467,57 @@ def api_lookup_tray(tray_id):
         conn = get_fresh_db_connection()
         cursor = conn.cursor()
         
-        # Step 1: Query wms.tray_monitoring & nexs_dp.monitor_panel_data (fast indexed lookup check)
+        # Step 1: Query wms.tray_monitoring securely (Rule 4 check)
         cursor.execute("""
-            SELECT tm.wms_fitting_id AS fitting_id, mp.is_jit, mp.processing_type
-            FROM wms.tray_monitoring tm
-            LEFT JOIN nexs_dp.monitor_panel_data mp ON mp.shipping_package_id = tm.tray_id
-            WHERE tm.tray_id = %s LIMIT 1
+            SELECT wms_fitting_id AS fitting_id, espresso_fitting_id
+            FROM wms.tray_monitoring
+            WHERE tray_id = %s LIMIT 1
         """, (tray_id,))
         tm_row = cursor.fetchone()
 
-        if not tm_row or tm_row.get('fitting_id') is None or str(tm_row.get('fitting_id')).strip() in ('', '0'):
-            return jsonify({'error': f"Tray ID '{tray_id}' not found in database"}), 444
+        if not tm_row:
+            return jsonify({'error': f"Tray ID '{tray_id}' not found in database or is unregistered"}), 444
+        
+        fitting_id = tm_row.get('fitting_id')
+        
+        # If wms_fitting_id is 0 or missing, fall back to espresso_fitting_id
+        if not fitting_id or str(fitting_id).strip() in ('', '0'):
+            espresso_id = str(tm_row.get('espresso_fitting_id') or '').strip()
+            if not espresso_id or espresso_id in ('', '0', 'None'):
+                return jsonify({'error': f"Tray ID '{tray_id}' not found in database or is unregistered"}), 444
+            fitting_id = espresso_id
             
-        is_jit_val = "YES" if tm_row.get('is_jit') in (1, '1', True, 'true', 'YES') else "NO"
-        processing_type_val = str(tm_row.get('processing_type') or '--').strip()
-        if not processing_type_val:
-            processing_type_val = '--'
+        is_jit_val = "NO"
+        processing_type_val = '--'
 
-        # Step 2: Single JOIN Query for valid tray (saves 2 network roundtrips)
+        # Step 2a: Get order items — driven by indexed fitting_id (guaranteed fast)
         cursor.execute("""
             SELECT 
-                tm.tray_id,
-                tm.wms_fitting_id AS fitting_id,
-                fd.order_id,
-                oi.product_id,
-                oi.barcode,
-                oi.item_type
-            FROM wms.tray_monitoring tm
-            LEFT JOIN wms.fitting_detail fd ON fd.fitting_id = tm.wms_fitting_id
-            LEFT JOIN wms.order_items oi ON oi.fitting_id = tm.wms_fitting_id
-            WHERE tm.tray_id = %s
-        """, (tray_id,))
+                fitting_id,
+                nexs_order_id,
+                product_id,
+                barcode,
+                item_type,
+                shipping_package_id,
+                processing_type AS oi_processing_type
+            FROM wms.order_items
+            WHERE fitting_id = %s
+        """, (fitting_id,))
         rows = cursor.fetchall() or []
         
         if not rows:
             return jsonify({'error': f"Tray ID '{tray_id}' not found in database"}), 444
-            
+
         fitting_id = rows[0].get('fitting_id')
-        order_id = rows[0].get('order_id')
+        
+        # Step 2b: Get order_id from fitting_detail (separate small query, no JOIN overhead)
+        cursor.execute("SELECT order_id FROM wms.fitting_detail WHERE fitting_id = %s LIMIT 1", (fitting_id,))
+        fd_row = cursor.fetchone()
+        order_id = (fd_row.get('order_id') if fd_row else None) or rows[0].get('nexs_order_id')
+        
+        # Attach order_id to rows for downstream compatibility
+        for r in rows:
+            r['order_id'] = order_id
 
         # Parse Frame PID, Frame Barcode, Right Lens PID/Barcode, Left Lens PID/Barcode
         frame_pid = ""
@@ -519,7 +532,7 @@ def api_lookup_tray(tray_id):
             pid = str(item.get('product_id') or '').strip()
             barcode = str(item.get('barcode') or '').strip()
 
-            if itype == 'FRAME' or 'FRAME' in itype:
+            if 'FRAME' in itype or 'SUNGLASS' in itype or 'SPECTACLE' in itype or 'READING' in itype:
                 frame_pid = pid
                 frame_barcode = barcode
             elif itype == 'RIGHTLENS' or 'RIGHT' in itype:
@@ -530,64 +543,78 @@ def api_lookup_tray(tray_id):
                 left_lens_barcode = barcode
 
         # ---------------------------------------------------------------------
-        # BULLETPROOF MULTI-STAGE OPTICAL POWER LOOKUP
+        # Rule 6b: Monitor Panel Data Joins (JIT & FR Tags)
+        # ---------------------------------------------------------------------
+        sp_ids = list(set([str(r['shipping_package_id']).strip() for r in rows if r.get('shipping_package_id') and str(r['shipping_package_id']).strip() not in ('', '0', 'None')]))
+        
+        mp_data = {}
+        if sp_ids:
+            format_strings = ','.join(['%s'] * len(sp_ids))
+            cursor.execute(f"SELECT shipping_package_id, jit_type, v3_fr_tag FROM nexs_dp.monitor_panel_data WHERE shipping_package_id IN ({format_strings})", tuple(sp_ids))
+            for mp_row in cursor.fetchall():
+                mp_data[str(mp_row['shipping_package_id']).strip()] = mp_row
+
+        for r in rows:
+            spid = str(r.get('shipping_package_id') or '').strip()
+            if spid in mp_data:
+                j_val = str(mp_data[spid].get('jit_type') or '').strip().upper()
+                if j_val == 'LENS LAB':
+                    is_jit_val = 'AUTO'
+                elif j_val == 'EXTERNAL VENDOR' and is_jit_val != 'AUTO':
+                    is_jit_val = 'MANUAL'
+                    
+                p_val = str(mp_data[spid].get('v3_fr_tag') or '').strip()
+                if p_val and p_val != 'None':
+                    processing_type_val = p_val
+
+        # ---------------------------------------------------------------------
+        # BULLETPROOF OPTICAL POWER LOOKUP (BYPASSED ORDER_ID)
         # ---------------------------------------------------------------------
         right_power = {}
         left_power = {}
-        lens_index = "1.56"
+        lens_index = ""
         lens_name = ""
-        p_rows = []
-
-        # Stage 1: Try lookup by order_id
-        if order_id:
+        # Fetch Right Lens Power directly by its PID
+        if right_lens_pid and str(right_lens_pid).strip() not in ('', '0'):
             try:
                 cursor.execute("""
-                    SELECT product_id, right_lens, lens_index, sph, cyl, axis, ap AS addn, lensname
+                    SELECT lens_index, sph, cyl, axis, ap AS addn, lensname 
                     FROM wms.power 
-                    WHERE order_id = %s
-                """, (order_id,))
-                p_rows = cursor.fetchall()
+                    WHERE product_id = %s LIMIT 1
+                """, (right_lens_pid,))
+                r_row = cursor.fetchone()
+                if r_row:
+                    right_power = {
+                        'sph': str(r_row.get('sph') or ''),
+                        'cyl': str(r_row.get('cyl') or ''),
+                        'axis': str(r_row.get('axis') or ''),
+                        'addn': str(r_row.get('addn') or '')
+                    }
+                    if r_row.get('lens_index'): lens_index = str(r_row.get('lens_index'))
+                    if r_row.get('lensname'): lens_name = str(r_row.get('lensname'))
             except Exception as pe:
-                print(f"[!] Power lookup by order_id warning: {pe}")
+                print(f"[!] Right Power lookup warning: {pe}")
 
-        # Stage 2: Fallback lookup by product_id if order_id lookup returned no powers
-        if not p_rows and (right_lens_pid or left_lens_pid):
+        # Fetch Left Lens Power directly by its PID (allows duplicate PIDs to apply to both)
+        if left_lens_pid and str(left_lens_pid).strip() not in ('', '0'):
             try:
-                pids_to_check = []
-                for p in [right_lens_pid, left_lens_pid]:
-                    if p and str(p).strip():
-                        pids_to_check.append(str(p).strip())
-
-                if pids_to_check:
-                    format_strings = ','.join(['%s'] * len(pids_to_check))
-                    cursor.execute(f"""
-                        SELECT product_id, right_lens, lens_index, sph, cyl, axis, ap AS addn, lensname
-                        FROM wms.power 
-                        WHERE product_id IN ({format_strings})
-                        LIMIT 4
-                    """, tuple(pids_to_check))
-                    p_rows = cursor.fetchall()
+                cursor.execute("""
+                    SELECT lens_index, sph, cyl, axis, ap AS addn, lensname 
+                    FROM wms.power 
+                    WHERE product_id = %s LIMIT 1
+                """, (left_lens_pid,))
+                l_row = cursor.fetchone()
+                if l_row:
+                    left_power = {
+                        'sph': str(l_row.get('sph') or ''),
+                        'cyl': str(l_row.get('cyl') or ''),
+                        'axis': str(l_row.get('axis') or ''),
+                        'addn': str(l_row.get('addn') or '')
+                    }
+                    if l_row.get('lens_index'): lens_index = str(l_row.get('lens_index'))
+                    if l_row.get('lensname'): lens_name = str(l_row.get('lensname'))
             except Exception as pe:
-                print(f"[!] Power lookup by product_id warning: {pe}")
-
-        # Stage 3: Fallback lookup by product_id or order_id completed (fitting_id is not a column in wms.power)
-        if not p_rows:
-            pass
-
-        # Parse fetched power rows safely
-        for p in p_rows:
-            rl = str(p.get('right_lens') or '').strip().lower()
-            pid = str(p.get('product_id') or '').strip()
-
-            if p.get('lens_index'):
-                lens_index = str(p['lens_index'])
-            if p.get('lensname'):
-                lens_name = str(p['lensname'])
-
-            if rl == 'right' or (pid and pid == right_lens_pid):
-                right_power = p
-            elif rl == 'left' or (pid and pid == left_lens_pid):
-                left_power = p
+                print(f"[!] Left Power lookup warning: {pe}")
 
         # Stage 4: Removed (Merged into Step 1 to save 250ms network roundtrip)
 
@@ -612,18 +639,18 @@ def api_lookup_tray(tray_id):
                 'sph': str(right_power.get('sph') if right_power.get('sph') is not None else '--'),
                 'cyl': str(right_power.get('cyl') if right_power.get('cyl') is not None else '--'),
                 'axis': str(right_power.get('axis') if right_power.get('axis') is not None else '--'),
-                'addn': str(right_power.get('ap') if right_power.get('ap') is not None else '--')
+                'addn': str(right_power.get('addn') if right_power.get('addn') is not None else '--')
             },
             'left_lens': {
                 'sph': str(left_power.get('sph') if left_power.get('sph') is not None else '--'),
                 'cyl': str(left_power.get('cyl') if left_power.get('cyl') is not None else '--'),
                 'axis': str(left_power.get('axis') if left_power.get('axis') is not None else '--'),
-                'addn': str(left_power.get('ap') if left_power.get('ap') is not None else '--')
+                'addn': str(left_power.get('addn') if left_power.get('addn') is not None else '--')
             },
             'sph': str(right_power.get('sph') or left_power.get('sph') or ''),
             'cyl': str(right_power.get('cyl') or left_power.get('cyl') or ''),
             'axis': str(right_power.get('axis') or left_power.get('axis') or ''),
-            'addn': str(right_power.get('ap') or left_power.get('ap') or ''),
+            'addn': str(right_power.get('addn') or left_power.get('addn') or ''),
             'items_count': len(rows),
             'elapsed_ms': elapsed_ms
         }
@@ -775,11 +802,24 @@ def api_analytics():
     pid_issues_map = {}
     shift_counts = {'Shift A': 0, 'Shift B': 0, 'Shift C': 0}
     shift_operators = {}
-
+    
+    hourly_trend = {
+        'all': [0] * 24,
+        'shifts': {},
+        'operators': {}
+    }
+    
     for r in records:
-        cat = r.get('fail_category', 'LEFT LENS')
-        fail_categories[cat] = fail_categories.get(cat, 0) + 1
-
+        if str(r.get('status', '')).strip().upper() == 'OK':
+            ok_count += 1
+            continue
+            
+        ng_count += 1
+            
+        cat = str(r.get('fail_category', '')).strip().upper()
+        if cat in fail_categories:
+            fail_categories[cat] = fail_categories.get(cat, 0) + 1
+        
         iss = r.get('issue', 'OTHER')
         issue_counts[iss] = issue_counts.get(iss, 0) + 1
 
@@ -798,6 +838,27 @@ def api_analytics():
         if sh not in shift_operators:
             shift_operators[sh] = {}
         shift_operators[sh][op] = shift_operators[sh].get(op, 0) + 1
+
+        # HOURLY TREND BUCKETING (Raw NG Counts)
+        time_str = str(r.get('entry_time', '')).strip().replace('.', ':')
+        try:
+            if ':' in time_str:
+                hour = int(time_str.split(':')[0])
+            else:
+                hour = 0
+        except:
+            hour = 0
+            
+        if 0 <= hour < 24:
+            hourly_trend['all'][hour] += 1
+            
+            if sh not in hourly_trend['shifts']:
+                hourly_trend['shifts'][sh] = [0] * 24
+            hourly_trend['shifts'][sh][hour] += 1
+            
+            if op not in hourly_trend['operators']:
+                hourly_trend['operators'][op] = [0] * 24
+            hourly_trend['operators'][op][hour] += 1
 
         for pid_key in ('frame_pid', 'right_lens_pid', 'left_lens_pid'):
             pid_val = str(r.get(pid_key, '') or '').strip()
@@ -831,17 +892,20 @@ def api_analytics():
         s_ops = sorted(op_m.items(), key=lambda x: x[1], reverse=True)
         shift_operators_payload[sh_k] = [{'operator': k, 'count': v} for k, v in s_ops]
 
-    top_pids_payload = []
+    top_pids_payload = {'all': []}
     for pid, count in sorted_pids:
         iss_dict = pid_issues_map.get(pid, {})
         top_cause = sorted(iss_dict.items(), key=lambda x: x[1], reverse=True)[0][0] if iss_dict else 'OTHER'
         breakdown_str = ", ".join([f"{k}: {v}" for k, v in sorted(iss_dict.items(), key=lambda x: x[1], reverse=True)])
-        top_pids_payload.append({
+        top_pids_payload['all'].append({
             'pid': pid,
             'count': count,
             'top_cause': top_cause,
             'breakdown': breakdown_str
         })
+        
+    # We will populate other shifts in top_pids if requested, but app.js defaults to .all. 
+    # For now, populating just 'all' restores the exact structure app.js expects: data.top_pids.all
 
     # Calculate min_date and max_date for auto-populating Analytics date controls
     min_date = None
@@ -887,7 +951,8 @@ def api_analytics():
         'top_operators': [{'operator': k, 'count': v} for k, v in sorted_operators],
         'top_pids': top_pids_payload,
         'shift_counts': [{'shift': k, 'count': v} for k, v in sorted_shifts],
-        'shift_operators': shift_operators_payload
+        'shift_operators': shift_operators_payload,
+        'hourly_data': hourly_trend
     })
 
 

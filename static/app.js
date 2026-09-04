@@ -4,6 +4,8 @@ let activeTab = 'tab1';
 let chartDonut = null;
 let chartBar = null;
 let chartPie = null;
+let chartHourlyTrend = null;
+let rawHourlyData = null;
 let currentLookupData = null;
 let cachedDropdownOptions = {};
 let activeModalFieldId = null;
@@ -113,7 +115,7 @@ async function promptSetAdaptivePassword() {
                     dbPill.className = 'stat-pill badge-online';
                     dbPill.innerHTML = '🟢 MySQL Connected';
                 }
-                const trayVal = document.getElementById('txtScanTray')?.value?.trim();
+                const trayVal = document.getElementById('txtScanTray')?.value?.trim().toUpperCase();
                 if (trayVal) {
                     triggerLookup(trayVal);
                 }
@@ -410,7 +412,7 @@ function initScanner() {
         clearTimeout(timer);
         timer = setTimeout(() => {
             const val = scanInput.value.trim();
-            if (val.length >= 3) {
+            if (val.length >= 7) {
                 triggerLookup(val);
             }
         }, 60);
@@ -433,7 +435,7 @@ async function triggerLookup(trayId) {
     lblLatency.className = 'badge-status badge-asrs';
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
 
     try {
         const res = await fetch(`/api/lookup/${encodeURIComponent(trayId)}`, { signal: controller.signal });
@@ -449,7 +451,14 @@ async function triggerLookup(trayId) {
 
             setElemText('valFittingId', data.fitting_id);
             setElemText('valOrderId', data.order_id);
-            setElemText('valIsJit', data.is_jit || 'NO');
+            
+            const jitVal = data.is_jit || 'NO';
+            const jitEl = document.getElementById('valIsJit');
+            if (jitEl) {
+                jitEl.textContent = jitVal;
+                jitEl.style.color = (jitVal === 'AUTO' || jitVal === 'MANUAL') ? 'var(--green-accent)' : 'var(--text-muted)';
+            }
+
             setElemText('valProcessingType', data.processing_type || '--');
             setElemText('valFramePid', data.frame_pid);
             setElemText('valFrameBarcode', data.frame_barcode);
@@ -457,7 +466,7 @@ async function triggerLookup(trayId) {
             setElemText('valRightLensBarcode', data.right_lens_barcode);
             setElemText('valLeftLensPid', data.left_lens_pid);
             setElemText('valLeftLensBarcode', data.left_lens_barcode);
-            setElemText('valLensIndex', `${data.lens_index || '1.56'} (${data.lens_name || 'Standard'})`);
+            setElemText('valLensIndex', data.lens_index ? `${data.lens_index}${data.lens_name ? ' (' + data.lens_name + ')' : ''}` : '--');
 
             // Populate RIGHT LENS POWERS
             const r = data.right_lens || {};
@@ -516,6 +525,17 @@ function clearDbCard() {
     currentLookupData = null;
     document.getElementById('valFittingId').textContent = '--';
     document.getElementById('valOrderId').textContent = '--';
+    
+    const jitEl = document.getElementById('valIsJit');
+    if (jitEl) {
+        jitEl.textContent = '--';
+        jitEl.style.color = 'var(--text-muted)';
+    }
+    const processingEl = document.getElementById('valProcessingType');
+    if (processingEl) {
+        processingEl.textContent = '--';
+    }
+
     document.getElementById('valFramePid').textContent = '--';
     document.getElementById('valLensIndex').textContent = '--';
     document.getElementById('valRightLensBarcode').textContent = '--';
@@ -542,7 +562,7 @@ async function submitEscalation(e) {
 
     const scanElem = document.getElementById('txtScanTray');
     const warningElem = document.getElementById('lblTrayWarning');
-    const trayId = scanElem ? scanElem.value.trim() : '';
+    const trayId = scanElem ? scanElem.value.trim().toUpperCase() : '';
 
     if (!trayId) {
         if (warningElem) warningElem.style.display = 'block';
@@ -560,10 +580,7 @@ async function submitEscalation(e) {
         }
     }
 
-    // Auto-fetch DB lookup details if missing or if Tray ID changed
-    if (!currentLookupData || currentLookupData.tray_id !== trayId) {
-        await triggerLookup(trayId);
-    }
+    // NOTE: Lookup already auto-fires when user types 7-char tray ID. Do NOT re-run here.
 
     const category = document.getElementById('selFailCategory')?.value || 'LEFT LENS';
     
@@ -597,7 +614,7 @@ async function submitEscalation(e) {
         frame_pid: framePid,
         right_lens_barcode: rightBarcode,
         left_lens_barcode: leftBarcode,
-        lens_index: currentLookupData ? currentLookupData.lens_index : '1.56',
+        lens_index: currentLookupData ? currentLookupData.lens_index : '',
         sph: currentLookupData ? currentLookupData.sph : '',
         cyl: currentLookupData ? currentLookupData.cyl : '',
         axis: currentLookupData ? currentLookupData.axis : '',
@@ -858,7 +875,17 @@ function renderTable(records) {
         else if (st.includes('JIT ASRS')) statusBadge = '<span class="badge-status badge-asrs">JIT ASRS</span>';
         else if (st.includes('STOCKING')) statusBadge = '<span class="badge-status badge-ok" style="background: rgba(56, 189, 248, 0.2); color: #38BDF8; border-color: rgba(56, 189, 248, 0.4);">STOCKING</span>';
 
-        let jitBadge = r.is_jit === 'YES' ? '<span class="badge-status badge-ok" style="padding: 2px 6px; font-size: 0.75rem;">YES</span>' : '<span style="color: var(--text-muted);">NO</span>';
+        const jitVal = (r.is_jit || 'NO').toString().trim().toUpperCase();
+        let jitBadge;
+        if (jitVal === 'AUTO' || jitVal === 'YES' || jitVal === 'JIT') {
+            jitBadge = `<span class="badge-status badge-ok" style="padding: 2px 6px; font-size: 0.75rem;">AUTO</span>`;
+        } else if (jitVal === 'MANUAL') {
+            jitBadge = `<span class="badge-status badge-ok" style="padding: 2px 6px; font-size: 0.75rem; background: rgba(168,85,247,0.2); color: #a855f7; border-color: rgba(168,85,247,0.4);">MANUAL</span>`;
+        } else if (jitVal === 'NON JIT' || jitVal === 'NON-JIT' || jitVal === 'NO') {
+            jitBadge = `<span style="color: var(--text-muted);">NO</span>`;
+        } else {
+            jitBadge = `<span style="color: var(--text-muted);">${jitVal}</span>`;
+        }
 
         tr.innerHTML = `
             <td>${r.entry_date} ${r.entry_time}</td>
@@ -868,7 +895,7 @@ function renderTable(records) {
             <td>${r.fitting_id || '--'}</td>
             <td>${jitBadge}</td>
             <td><strong style="color: var(--amber-accent);">${r.processing_type || '--'}</strong></td>
-            <td>${r.lens_index || '1.56'}</td>
+            <td>${r.lens_index || '--'}</td>
             <td>${r.fail_category}</td>
             <td>${r.issue}</td>
             <td>${statusBadge}</td>
@@ -946,6 +973,7 @@ async function loadAnalytics() {
         // Cache Shift-Wise Operator Data
         rawShiftOperatorsData = data.shift_operators || {};
         allOperatorsData = data.top_operators || [];
+        rawHourlyData = data.hourly_data || { all: [], shifts: {}, operators: {} };
 
         // Apply Shift Filter for Operator Card if selected
         const selShift = document.getElementById('selOperatorShiftFilter')?.value || 'ALL';
@@ -960,11 +988,15 @@ async function loadAnalytics() {
         // Render Operator Failure Volume Chart
         renderGenericChart('operators', opData, 'operator');
 
-        // Render Maximum Failed PIDs Chart
-        renderGenericChart('pids', data.top_pids, 'pid');
+        // Render Maximum Failed PIDs Chart (using .all for the new dictionary structure)
+        renderGenericChart('pids', data.top_pids.all || [], 'pid');
 
         // Render Shift-Wise Failures Chart
         renderGenericChart('shifts', data.shift_counts, 'shift');
+
+        // Render Hourly Trend Chart
+        populateHourlyOperators();
+        updateHourlyChart();
 
     } catch (err) {
         console.error('Analytics Error:', err);
@@ -977,6 +1009,116 @@ function filterOperatorShift(selectedShift) {
         filteredData = rawShiftOperatorsData[selectedShift];
     }
     renderGenericChart('operators', filteredData, 'operator');
+}
+
+function populateHourlyOperators() {
+    const sel = document.getElementById('selHourlyOperator');
+    if (!sel || !rawHourlyData) return;
+    const currentVal = sel.value;
+    sel.innerHTML = '<option value="ALL">All Operators</option>';
+    const ops = Object.keys(rawHourlyData.operators || {}).sort();
+    ops.forEach(op => {
+        const opt = document.createElement('option');
+        opt.value = op;
+        opt.textContent = op;
+        sel.appendChild(opt);
+    });
+    if (ops.includes(currentVal)) sel.value = currentVal;
+}
+
+function updateHourlyChart() {
+    const ctx = document.getElementById('chartHourlyTrend')?.getContext('2d');
+    if (!ctx || !rawHourlyData) return;
+
+    const selShift = document.getElementById('selHourlyShift')?.value || 'ALL';
+    const selOp = document.getElementById('selHourlyOperator')?.value || 'ALL';
+
+    let dataArray = [];
+    if (selOp !== 'ALL' && rawHourlyData.operators[selOp]) {
+        dataArray = rawHourlyData.operators[selOp];
+    } else if (selShift !== 'ALL' && rawHourlyData.shifts[selShift]) {
+        dataArray = rawHourlyData.shifts[selShift];
+    } else {
+        dataArray = rawHourlyData.all || [];
+    }
+
+    const labels = Array.from({length: 24}, (_, i) => `${i.toString().padStart(2, '0')}:00`);
+
+    const lblSub = document.getElementById('lblHourlySubtitle');
+    if (lblSub) {
+        lblSub.textContent = ``;
+    }
+
+    if (chartHourlyTrend) chartHourlyTrend.destroy();
+
+    const isLight = document.body.classList.contains('light-theme');
+    const colorLine = isLight ? '#0284C7' : '#00f2fe';
+    
+    // Create gradient fill
+    const gradient = ctx.createLinearGradient(0, 0, 0, 320);
+    gradient.addColorStop(0, isLight ? 'rgba(2, 132, 199, 0.4)' : 'rgba(0, 242, 254, 0.4)');
+    gradient.addColorStop(1, isLight ? 'rgba(2, 132, 199, 0.0)' : 'rgba(0, 242, 254, 0.0)');
+
+    const colorText = isLight ? '#64748B' : '#94A3B8';
+    const colorGrid = isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.05)';
+
+    // Custom plugin for line glow
+    const shadowPlugin = {
+        id: 'lineShadow',
+        beforeDatasetDraw: (chart, args) => {
+            const c_ctx = chart.ctx;
+            c_ctx.save();
+            c_ctx.shadowColor = colorLine;
+            c_ctx.shadowBlur = 10;
+            c_ctx.shadowOffsetX = 0;
+            c_ctx.shadowOffsetY = 0;
+        },
+        afterDatasetDraw: (chart) => {
+            chart.ctx.restore();
+        }
+    };
+
+    chartHourlyTrend = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'Failures',
+                data: dataArray,
+                borderColor: colorLine,
+                backgroundColor: gradient,
+                borderWidth: 2,
+                pointBackgroundColor: isLight ? '#FFF' : '#0B0F19',
+                pointBorderColor: colorLine,
+                pointBorderWidth: 2,
+                pointRadius: 3,
+                pointHoverRadius: 5,
+                fill: true,
+                tension: 0.4
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: { beginAtZero: true, grid: { color: colorGrid, drawBorder: false }, ticks: { color: colorText, stepSize: 2 } },
+                x: { grid: { display: false }, ticks: { color: colorText, maxRotation: 45, minRotation: 45, font: { size: 10 } } }
+            },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: isLight ? 'rgba(255,255,255,0.95)' : 'rgba(15,23,42,0.95)',
+                    titleColor: colorLine,
+                    bodyColor: isLight ? '#0F172A' : '#FFF',
+                    borderColor: isLight ? '#E2E8F0' : 'rgba(255,255,255,0.1)',
+                    borderWidth: 1,
+                    padding: 10,
+                    displayColors: false
+                }
+            }
+        },
+        plugins: [shadowPlugin]
+    });
 }
 
 function renderGenericChart(chartKey, rawData, keyField) {
@@ -1215,6 +1357,9 @@ async function submitAdaptivePassword() {
             setTimeout(() => {
                 closePasswordModal();
                 const scanInput = document.getElementById('txtScanTray');
+                if (scanInput) {
+                    scanInput.value = scanInput.value.toUpperCase();
+                }
                 if (scanInput && scanInput.value.trim()) {
                     triggerLookup(scanInput.value.trim());
                 }
