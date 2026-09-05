@@ -209,27 +209,26 @@ function renderSelectElement(selectId, optionsList, useTomSelect = true) {
             
             tsInstances[selectId] = new TomSelect('#' + selectId, {
                 create: false,
-                sortField: { field: "text", direction: "asc" }
+                sortField: { field: "text", direction: "asc" },
+                dropdownParent: 'body',
+                maxOptions: null
             });
         }
     } else {
         const curVal = el.value;
         el.innerHTML = '';
-        
-        const defaultPlaceholder = document.createElement('option');
-        defaultPlaceholder.value = '';
-        defaultPlaceholder.textContent = 'Select...';
-        defaultPlaceholder.disabled = true;
-        if (!curVal) defaultPlaceholder.selected = true;
-        el.appendChild(defaultPlaceholder);
 
-        optionsList.forEach(opt => {
+        optionsList.forEach((opt, idx) => {
             const optionEl = document.createElement('option');
             optionEl.value = opt;
             optionEl.textContent = opt;
             optionEl.style.backgroundColor = '#111827';
             optionEl.style.color = '#F9FAFB';
-            if (opt === curVal) optionEl.selected = true;
+            if (curVal && optionsList.includes(curVal)) {
+                if (opt === curVal) optionEl.selected = true;
+            } else {
+                if (idx === 0) optionEl.selected = true;
+            }
             el.appendChild(optionEl);
         });
     }

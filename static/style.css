@@ -827,17 +827,19 @@ tbody tr:hover {
     border-color: var(--card-border) !important;
 }
 .ts-dropdown {
-    background-color: var(--bg-dark) !important;
+    background-color: #0F172A !important;
     border: 1px solid var(--card-border) !important;
     color: var(--text-main) !important;
     border-radius: var(--radius-sm) !important;
-    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.7) !important;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.85) !important;
     font-size: 0.95rem;
+    z-index: 999999 !important;
 }
 .ts-dropdown .option {
-    padding: 10px 14px !important;
+    padding: 7px 12px !important;
     color: var(--text-main);
     transition: background-color 0.2s;
+    font-size: 0.88rem;
 }
 .ts-dropdown .option:hover {
     background-color: rgba(255, 255, 255, 0.05);
@@ -871,7 +873,7 @@ body.light-theme .ts-control {
     padding: 0 !important;
 }
 .ts-dropdown .ts-dropdown-content {
-    max-height: 250px !important;
+    max-height: 520px !important;
 }
 .ts-dropdown .ts-dropdown-content::-webkit-scrollbar {
     width: 8px;
