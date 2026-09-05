@@ -108,3 +108,8 @@ Before making ANY change, every agent session MUST confirm:
 ### Rule 18: Frontend Scanner Debounce Lock
 - **MANDATORY**: `triggerLookup(trayId)` in `app.js` MUST use a state lock (e.g., `currentFetchingTray = trayId`) to abort duplicate concurrent requests.
 - **Reason**: Barcode scanners type rapidly and automatically press `Enter`. This triggers BOTH the `input` event (at exactly 7 characters) and the `keydown` event simultaneously. Without a debounce lock, the frontend fires two identical API requests at the exact same millisecond, amplifying the risk of backend thread collisions.
+
+### Rule 19: UI Dropdown Directives & Dropup Search Positioning
+- **Native Selects (`FAIL CATEGORY`, `STATUS`, `SHIFT IC`, `OPERATOR`)**: MUST NEVER display a disabled `"Select..."` placeholder option. Native select dropdowns MUST default directly to their first available option (`optionsList[0]`).
+- **Searchable Primary Cause Dropdown (`PRIMARY ISSUE / CAUSE`)**: This is the **ONLY** dropdown that uses TomSelect with live text filtering.
+- **Upward Dropup Placement**: The `PRIMARY ISSUE / CAUSE` TomSelect menu MUST open **upwards** (above the search input box). Its max-height is calculated dynamically (`rect.top - 20px`) so that the search text box remains **100% visible and unobstructed** for real-time typing.
