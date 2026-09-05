@@ -207,12 +207,40 @@ function renderSelectElement(selectId, optionsList, useTomSelect = true) {
                 el.appendChild(optionEl);
             });
             
-            tsInstances[selectId] = new TomSelect('#' + selectId, {
+            const ts = new TomSelect('#' + selectId, {
                 create: false,
                 sortField: { field: "text", direction: "asc" },
                 dropdownParent: 'body',
                 maxOptions: null
             });
+
+            const positionAbove = () => {
+                if (!ts.isOpen) return;
+                const control = ts.control;
+                const dropdown = ts.dropdown;
+                if (!control || !dropdown) return;
+                const rect = control.getBoundingClientRect();
+                const dropdownHeight = dropdown.offsetHeight || 400;
+                dropdown.style.position = 'absolute';
+                dropdown.style.left = rect.left + window.scrollX + 'px';
+                dropdown.style.width = rect.width + 'px';
+                dropdown.style.top = Math.max(10, rect.top + window.scrollY - dropdownHeight - 4) + 'px';
+                dropdown.style.bottom = 'auto';
+                dropdown.style.borderRadius = '8px 8px 0 0';
+                dropdown.style.boxShadow = '0 -12px 36px rgba(0, 0, 0, 0.85)';
+            };
+
+            ts.on('dropdown_open', () => {
+                positionAbove();
+                requestAnimationFrame(positionAbove);
+                setTimeout(positionAbove, 20);
+            });
+
+            ts.on('type', () => {
+                setTimeout(positionAbove, 10);
+            });
+
+            tsInstances[selectId] = ts;
         }
     } else {
         const curVal = el.value;
