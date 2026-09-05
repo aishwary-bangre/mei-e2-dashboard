@@ -801,3 +801,65 @@ tbody tr:hover {
     grid-template-columns: 1fr 1fr;
     gap: 20px;
 }
+
+/* TomSelect Premium Dark Mode Overrides */
+.ts-control {
+    background-color: var(--input-bg) !important;
+    border: 1px solid var(--card-border) !important;
+    color: var(--text-main) !important;
+    border-radius: var(--radius-sm) !important;
+    padding: 10px 14px !important;
+    min-height: 44px;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
+    font-size: 0.95rem;
+    transition: var(--transition);
+}
+.ts-control:focus-within {
+    border-color: var(--cyan-accent) !important;
+    box-shadow: 0 0 10px var(--cyan-glow) !important;
+}
+.ts-control input {
+    color: var(--text-main) !important;
+    font-family: inherit !important;
+}
+.ts-wrapper.single .ts-control {
+    background: var(--input-bg) !important;
+    border-color: var(--card-border) !important;
+}
+.ts-dropdown {
+    background-color: var(--bg-dark) !important;
+    border: 1px solid var(--card-border) !important;
+    color: var(--text-main) !important;
+    border-radius: var(--radius-sm) !important;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.7) !important;
+    font-size: 0.95rem;
+}
+.ts-dropdown .option {
+    padding: 10px 14px !important;
+    color: var(--text-main);
+    transition: background-color 0.2s;
+}
+.ts-dropdown .option:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+}
+.ts-dropdown .active {
+    background-color: var(--cyan-glow) !important;
+    color: var(--cyan-accent) !important;
+    font-weight: 600;
+}
+.ts-wrapper.single .ts-control::after {
+    border-color: var(--text-muted) transparent transparent transparent !important;
+}
+body.light-theme .ts-dropdown {
+    background-color: #FFFFFF !important;
+    color: #0F172A !important;
+}
+body.light-theme .ts-dropdown .option {
+    color: #0F172A;
+}
+body.light-theme .ts-dropdown .option:hover {
+    background-color: rgba(0, 0, 0, 0.05);
+}
+body.light-theme .ts-control {
+    color: #0F172A !important;
+}
