@@ -2,6 +2,7 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
 :root {
+    color-scheme: dark;
     --bg-dark: #0B0F19;
     --card-bg: rgba(26, 34, 52, 0.85);
     --card-border: rgba(255, 255, 255, 0.08);
@@ -25,6 +26,7 @@
 
 /* Light Theme Variables */
 body.light-theme {
+    color-scheme: light;
     --bg-dark: #F1F5F9;
     --card-bg: #FFFFFF;
     --card-border: #E2E8F0;
@@ -44,6 +46,18 @@ body.light-theme {
 
 /* Fix Dropdown Text color specifically for Light Mode header */
 body.light-theme select.input-control {
+    color: #0F172A !important;
+}
+
+/* Match Native Option Popup Color to TomSelect Navy (#0F172A) */
+select option {
+    background-color: #0F172A !important;
+    color: #F8FAFC !important;
+    font-family: inherit;
+}
+
+body.light-theme select option {
+    background-color: #FFFFFF !important;
     color: #0F172A !important;
 }
 

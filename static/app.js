@@ -261,8 +261,8 @@ function renderSelectElement(selectId, optionsList, useTomSelect = true) {
             const optionEl = document.createElement('option');
             optionEl.value = opt;
             optionEl.textContent = opt;
-            optionEl.style.backgroundColor = '#111827';
-            optionEl.style.color = '#F9FAFB';
+            optionEl.style.backgroundColor = '#0F172A';
+            optionEl.style.color = '#F8FAFC';
             if (curVal && optionsList.includes(curVal)) {
                 if (opt === curVal) optionEl.selected = true;
             } else {
