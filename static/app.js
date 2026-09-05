@@ -219,12 +219,23 @@ function renderSelectElement(selectId, optionsList, useTomSelect = true) {
                 const control = ts.control;
                 const dropdown = ts.dropdown;
                 if (!control || !dropdown) return;
+                
                 const rect = control.getBoundingClientRect();
-                const dropdownHeight = dropdown.offsetHeight || 400;
+                const dropdownContent = dropdown.querySelector('.ts-dropdown-content');
+                
+                // Max height available above input box so it never covers the input box or top of screen
+                const maxAvailableHeight = Math.max(120, rect.top - 20);
+                if (dropdownContent) {
+                    dropdownContent.style.maxHeight = (maxAvailableHeight - 10) + 'px';
+                }
+                
+                const dropdownHeight = dropdown.offsetHeight || 300;
+                const topPos = rect.top + window.scrollY - dropdownHeight - 4;
+                
                 dropdown.style.position = 'absolute';
                 dropdown.style.left = rect.left + window.scrollX + 'px';
                 dropdown.style.width = rect.width + 'px';
-                dropdown.style.top = Math.max(10, rect.top + window.scrollY - dropdownHeight - 4) + 'px';
+                dropdown.style.top = topPos + 'px';
                 dropdown.style.bottom = 'auto';
                 dropdown.style.borderRadius = '8px 8px 0 0';
                 dropdown.style.boxShadow = '0 -12px 36px rgba(0, 0, 0, 0.85)';
