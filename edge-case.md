@@ -61,4 +61,21 @@ This document catalogs all technical edge cases, failure modes, root causes, and
 
 ### EC-09: Frontend Fetch Timeout Hangups
 * **Symptom**: UI stuck on `Fetching SQL...` permanently if the backend/proxy crashes mid-query.
-* **Defensive Fix**: Implemented a 5-second `AbortController` fetch timeout in `triggerLookup()` in `static/app.js`. If the lookup hangs, it safely aborts and displays `⏱️ Query Timeout`.
+* **Defensive Fix**: Implemented a 12-second `AbortController` fetch timeout in `triggerLookup()` in `static/app.js`. If the lookup hangs, it safely aborts and displays `⏱️ Query Timeout`.
+
+---
+
+## 4. Logical & State Edge Cases
+
+### EC-10: Stale `wms.tray_monitoring` Ghost Data
+* **Symptom**: Scanning an empty tray (e.g., `CT19650` or `CT25971`) incorrectly rendered data for old, already-shipped jobs. Scanning a reused tray (e.g., `CT57266`) returned the old discarded job instead of the newly assigned active job.
+* **Root Cause**: The WMS frequently fails to update `wms.tray_monitoring` when trays are emptied or reassigned. However, it successfully updates `location_id` in `wms.order_items`. The previous logic blindly trusted the stale `wms.tray_monitoring` ledger and rendered the `espresso_fitting_id` ghost history.
+* **Defensive Fix**: Implemented a **2-Step Live Priority Check**: 
+  1. Actively query `wms.order_items WHERE location_id = %s` to retrieve the physically accurate active job in the tray.
+  2. If empty, safely fallback to `wms.tray_monitoring` using `ORDER BY updated_at DESC LIMIT 1`.
+  3. Explicitly reject ghost data: `if identifier == 'DISCARD': return 444 (Tray Not Found)`.
+
+### EC-11: Proxy DoS Hangs & Socket Deadlocks
+* **Symptom**: Scanning trays rapidly or when the `adaptive.exe` proxy silently drops packets causes the PyMySQL thread to hang indefinitely, permanently freezing the Flask server UI for all users.
+* **Root Cause**: PyMySQL's default socket behavior has infinite read/write timeouts. If the proxy silently drops TCP packets, PyMySQL waits forever for a response, locking the thread.
+* **Defensive Fix**: Wrapped the lookup execution in a global `threading.Lock()` and enforced strict socket boundaries on PyMySQL: `connect_timeout=3`, `read_timeout=4`, and `write_timeout=3`.
