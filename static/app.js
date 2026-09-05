@@ -165,52 +165,72 @@ async function loadDropdownOptions() {
 }
 
 function renderAllDropdownSelects() {
-    renderSelectElement('selShiftIc', cachedDropdownOptions.shift_ic || []);
-    renderSelectElement('selOperator', cachedDropdownOptions.operator || []);
-    renderSelectElement('selFailCategory', cachedDropdownOptions.fail_category || []);
-    renderSelectElement('selStatus', cachedDropdownOptions.status || []);
-    renderSelectElement('selIssue', cachedDropdownOptions.issue || []);
+    renderSelectElement('selShiftIc', cachedDropdownOptions.shift_ic || [], false);
+    renderSelectElement('selOperator', cachedDropdownOptions.operator || [], false);
+    renderSelectElement('selFailCategory', cachedDropdownOptions.fail_category || [], true);
+    renderSelectElement('selStatus', cachedDropdownOptions.status || [], true);
+    renderSelectElement('selIssue', cachedDropdownOptions.issue || [], true);
 
     onFailCategoryChange();
 }
 
 let tsInstances = {}; // Track TomSelect instances
 
-function renderSelectElement(selectId, optionsList) {
+function renderSelectElement(selectId, optionsList, useTomSelect = true) {
     const el = document.getElementById(selectId);
     if (!el) return;
 
-    if (tsInstances[selectId]) {
-        const ts = tsInstances[selectId];
-        const curVal = ts.getValue();
-        ts.clearOptions();
-        optionsList.forEach(opt => {
-            ts.addOption({value: opt, text: opt});
-        });
-        if (curVal) ts.setValue(curVal);
-        ts.refreshOptions(false);
+    if (useTomSelect) {
+        if (tsInstances[selectId]) {
+            const ts = tsInstances[selectId];
+            const curVal = ts.getValue();
+            ts.clearOptions();
+            optionsList.forEach(opt => {
+                ts.addOption({value: opt, text: opt});
+            });
+            if (curVal) ts.setValue(curVal);
+            ts.refreshOptions(false);
+        } else {
+            const curVal = el.value;
+            el.innerHTML = '';
+            
+            const defaultPlaceholder = document.createElement('option');
+            defaultPlaceholder.value = '';
+            defaultPlaceholder.textContent = 'Search & Select...';
+            el.appendChild(defaultPlaceholder);
+
+            optionsList.forEach(opt => {
+                const optionEl = document.createElement('option');
+                optionEl.value = opt;
+                optionEl.textContent = opt;
+                if (opt === curVal) optionEl.selected = true;
+                el.appendChild(optionEl);
+            });
+            
+            tsInstances[selectId] = new TomSelect('#' + selectId, {
+                create: false,
+                sortField: { field: "text", direction: "asc" }
+            });
+        }
     } else {
         const curVal = el.value;
         el.innerHTML = '';
         
-        // Keep the default placeholder if one existed
         const defaultPlaceholder = document.createElement('option');
         defaultPlaceholder.value = '';
-        defaultPlaceholder.textContent = 'Search & Select...';
+        defaultPlaceholder.textContent = 'Select...';
+        defaultPlaceholder.disabled = true;
+        if (!curVal) defaultPlaceholder.selected = true;
         el.appendChild(defaultPlaceholder);
 
         optionsList.forEach(opt => {
             const optionEl = document.createElement('option');
             optionEl.value = opt;
             optionEl.textContent = opt;
+            optionEl.style.backgroundColor = '#111827';
+            optionEl.style.color = '#F9FAFB';
             if (opt === curVal) optionEl.selected = true;
             el.appendChild(optionEl);
-        });
-        
-        // Initialize TomSelect
-        tsInstances[selectId] = new TomSelect('#' + selectId, {
-            create: false,
-            sortField: { field: "text", direction: "asc" }
         });
     }
 }
