@@ -863,3 +863,26 @@ body.light-theme .ts-dropdown .option:hover {
 body.light-theme .ts-control {
     color: #0F172A !important;
 }
+
+/* TomSelect Scrollbar & Corner Fixes */
+.ts-dropdown {
+    border-radius: 0 0 var(--radius-sm) var(--radius-sm) !important;
+    overflow: hidden !important;
+    padding: 0 !important;
+}
+.ts-dropdown .ts-dropdown-content {
+    max-height: 250px !important;
+}
+.ts-dropdown .ts-dropdown-content::-webkit-scrollbar {
+    width: 8px;
+}
+.ts-dropdown .ts-dropdown-content::-webkit-scrollbar-track {
+    background: var(--card-bg);
+}
+.ts-dropdown .ts-dropdown-content::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+}
+.ts-dropdown .ts-dropdown-content::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+}

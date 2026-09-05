@@ -167,8 +167,8 @@ async function loadDropdownOptions() {
 function renderAllDropdownSelects() {
     renderSelectElement('selShiftIc', cachedDropdownOptions.shift_ic || [], false);
     renderSelectElement('selOperator', cachedDropdownOptions.operator || [], false);
-    renderSelectElement('selFailCategory', cachedDropdownOptions.fail_category || [], true);
-    renderSelectElement('selStatus', cachedDropdownOptions.status || [], true);
+    renderSelectElement('selFailCategory', cachedDropdownOptions.fail_category || [], false);
+    renderSelectElement('selStatus', cachedDropdownOptions.status || [], false);
     renderSelectElement('selIssue', cachedDropdownOptions.issue || [], true);
 
     onFailCategoryChange();
