@@ -165,6 +165,7 @@ async function loadDropdownOptions() {
 }
 
 function renderAllDropdownSelects() {
+    renderSelectElement('selShift', ['Shift A', 'Shift B', 'Shift C'], false);
     renderSelectElement('selShiftIc', cachedDropdownOptions.shift_ic || [], false);
     renderSelectElement('selOperator', cachedDropdownOptions.operator || [], false);
     renderSelectElement('selFailCategory', cachedDropdownOptions.fail_category || [], false);
@@ -172,48 +173,66 @@ function renderAllDropdownSelects() {
     renderSelectElement('selIssue', cachedDropdownOptions.issue || [], true);
 
     onFailCategoryChange();
+    autoSelectCurrentShift();
 }
 
 let tsInstances = {}; // Track TomSelect instances
 
-function renderSelectElement(selectId, optionsList, useTomSelect = true) {
+function renderSelectElement(selectId, optionsList, isSearchable = false) {
     const el = document.getElementById(selectId);
     if (!el) return;
 
-    if (useTomSelect) {
-        if (tsInstances[selectId]) {
-            const ts = tsInstances[selectId];
-            const curVal = ts.getValue();
-            ts.clearOptions();
-            optionsList.forEach(opt => {
-                ts.addOption({value: opt, text: opt});
-            });
-            if (curVal) ts.setValue(curVal);
-            ts.refreshOptions(false);
-        } else {
-            const curVal = el.value;
-            el.innerHTML = '';
-            
+    if (tsInstances[selectId]) {
+        const ts = tsInstances[selectId];
+        const curVal = ts.getValue();
+        ts.clearOptions();
+        optionsList.forEach(opt => {
+            ts.addOption({value: opt, text: opt});
+        });
+        if (curVal && optionsList.includes(curVal)) {
+            ts.setValue(curVal);
+        } else if (optionsList.length > 0) {
+            ts.setValue(optionsList[0]);
+        }
+        ts.refreshOptions(false);
+    } else {
+        const curVal = el.value;
+        el.innerHTML = '';
+
+        if (isSearchable) {
             const defaultPlaceholder = document.createElement('option');
             defaultPlaceholder.value = '';
             defaultPlaceholder.textContent = 'Search & Select...';
             el.appendChild(defaultPlaceholder);
+        }
 
-            optionsList.forEach(opt => {
-                const optionEl = document.createElement('option');
-                optionEl.value = opt;
-                optionEl.textContent = opt;
+        optionsList.forEach((opt, idx) => {
+            const optionEl = document.createElement('option');
+            optionEl.value = opt;
+            optionEl.textContent = opt;
+            if (curVal && optionsList.includes(curVal)) {
                 if (opt === curVal) optionEl.selected = true;
-                el.appendChild(optionEl);
-            });
-            
-            const ts = new TomSelect('#' + selectId, {
-                create: false,
-                sortField: { field: "text", direction: "asc" },
-                dropdownParent: 'body',
-                maxOptions: null
-            });
+            } else {
+                if (idx === 0) optionEl.selected = true;
+            }
+            el.appendChild(optionEl);
+        });
 
+        const tsConfig = {
+            create: false,
+            sortField: { field: "text", direction: "asc" },
+            dropdownParent: 'body'
+        };
+
+        if (!isSearchable) {
+            tsConfig.controlInput = null;
+        } else {
+            tsConfig.maxOptions = null;
+        }
+
+        const ts = new TomSelect('#' + selectId, tsConfig);
+
+        if (isSearchable) {
             const positionAbove = () => {
                 if (!ts.isOpen) return;
                 const control = ts.control;
@@ -223,7 +242,6 @@ function renderSelectElement(selectId, optionsList, useTomSelect = true) {
                 const rect = control.getBoundingClientRect();
                 const dropdownContent = dropdown.querySelector('.ts-dropdown-content');
                 
-                // Max height available above input box so it never covers the input box or top of screen
                 const maxAvailableHeight = Math.max(120, rect.top - 20);
                 if (dropdownContent) {
                     dropdownContent.style.maxHeight = (maxAvailableHeight - 10) + 'px';
@@ -250,26 +268,9 @@ function renderSelectElement(selectId, optionsList, useTomSelect = true) {
             ts.on('type', () => {
                 setTimeout(positionAbove, 10);
             });
-
-            tsInstances[selectId] = ts;
         }
-    } else {
-        const curVal = el.value;
-        el.innerHTML = '';
 
-        optionsList.forEach((opt, idx) => {
-            const optionEl = document.createElement('option');
-            optionEl.value = opt;
-            optionEl.textContent = opt;
-            optionEl.style.backgroundColor = '#0F172A';
-            optionEl.style.color = '#F8FAFC';
-            if (curVal && optionsList.includes(curVal)) {
-                if (opt === curVal) optionEl.selected = true;
-            } else {
-                if (idx === 0) optionEl.selected = true;
-            }
-            el.appendChild(optionEl);
-        });
+        tsInstances[selectId] = ts;
     }
 }
 

@@ -832,6 +832,28 @@ tbody tr:hover {
     border-color: var(--cyan-accent) !important;
     box-shadow: 0 0 10px var(--cyan-glow) !important;
 }
+
+/* Header Bar Compact TomSelect styling */
+.header-select-group .ts-wrapper {
+    display: inline-block !important;
+    width: auto !important;
+}
+.header-select-group .ts-control {
+    padding: 2px 22px 2px 6px !important;
+    font-size: 0.78rem !important;
+    min-height: 0 !important;
+    height: auto !important;
+    line-height: 1.2 !important;
+    background: transparent !important;
+    border: none !important;
+    color: #fff !important;
+    box-shadow: none !important;
+}
+.header-select-group .ts-wrapper.single .ts-control::after {
+    right: 4px !important;
+    top: 50% !important;
+    margin-top: -3px !important;
+}
 .ts-control input {
     color: var(--text-main) !important;
     font-family: inherit !important;
