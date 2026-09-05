@@ -31,10 +31,11 @@ This document provides a comprehensive technical architectural specification for
 |                                       MYSQL DATABASE (wms / app)                                  |
 |                                                                                                   |
 |  LOOKUP TABLES (Live Fetch < 10ms):                                                               |
-|  1. wms.tray_monitoring  --> Primary Lookup (tray_id -> wms_fitting_id)                           |
-|  2. wms.order_items      --> Item Lookup (fitting_id -> product_id, barcode, fitting_type)        |
-|  3. wms.fitting_detail   --> Order Link (fitting_id -> order_id)                                  |
-|  4. wms.power            --> Optical Powers & Lens Index (order_id -> lens_index, SPH, CYL, etc.)|
+|  1. wms.order_items      --> Primary Active Location Check (location_id -> fitting_id)            |
+|  2. wms.tray_monitoring  --> Historical Fallback Ledger (tray_id -> wms_fitting_id)               |
+|  3. wms.order_items      --> Item Lookup (fitting_id -> product_id, barcode, fitting_type)        |
+|  4. wms.fitting_detail   --> Order Link (fitting_id -> order_id)                                  |
+|  5. wms.power            --> Optical Powers & Lens Index (order_id -> lens_index, SPH, CYL, etc.) |
 |                                                                                                   |
 |  LOGGING TABLE (Escalation Records):                                                              |
 |  5. wms_e2_escalations   --> Stores all logged escalations & analytics data in MySQL            |
@@ -98,8 +99,8 @@ sequenceDiagram
         Flask-->>UI: ⚠️ Terminal Tunnel Offline (User manually runs `adaptive connect`)
     end
     
-    Flask->>MySQL: 1. SELECT wms_fitting_id FROM wms.tray_monitoring WHERE tray_id='CT18518'
-    MySQL-->>Flask: Returns wms_fitting_id=985621562 (< 2ms)
+    Flask->>MySQL: 1a. SELECT fitting_id FROM wms.order_items WHERE location_id='CT18518'
+    MySQL-->>Flask: Returns fitting_id=985621562 (< 2ms) (If None, fallbacks to wms.tray_monitoring)
     Flask->>MySQL: 2. SELECT order_items & fitting_detail order_id WHERE fitting_id=985621562
     MySQL-->>Flask: Returns items & order_id=742782924 (< 3ms)
     Flask->>MySQL: 3. SELECT lens_index, sph, cyl, axis, ap FROM wms.power WHERE order_id=742782924
@@ -161,10 +162,11 @@ Table: **`wms_e2_escalations`** (Stores all logged escalation records in MySQL)
 
 ## 🛡️ 24/7 Availability & Resilience Architecture
 
-1. **Automatic Port 13306 Health Monitoring**:
+1. **Automatic Port 13306 Health Monitoring & Threading Limits**:
    - Python checks port `13306` socket before executing live DB queries.
    - If port `13306` is disconnected, Python automatically launches `adaptive connect mysql_ro_nexs-slave02.prod.internal2 -p 13306` in a background daemon thread.
-2. **Non-Blocking Query Capping**:
-   - Queries use `connect_timeout=3` and `read_timeout=3` to guarantee that DB lookups never hang the UI thread.
+   - Global `threading.Lock()` ensures the PyMySQL connection is thread-safe across concurrent scans.
+2. **Non-Blocking Query Capping (DoS Prevention)**:
+   - Queries strictly use `connect_timeout=3`, `read_timeout=4`, and `write_timeout=3` to guarantee that silent proxy network drops never deadlock the UI thread.
 3. **1-Click Excel Export Compatibility**:
    - The export module utilizes `openpyxl` to build `.xlsx` workbooks formatted identically to `E2 escalation (1).xlsx`.

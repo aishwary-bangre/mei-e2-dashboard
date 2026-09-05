@@ -427,15 +427,19 @@ function initScanner() {
     });
 }
 
+let currentFetchingTray = null;
+
 async function triggerLookup(trayId) {
     if (!trayId) return;
+    if (currentFetchingTray === trayId) return;
+    currentFetchingTray = trayId;
 
     const lblLatency = document.getElementById('lblQueryLatency');
     lblLatency.textContent = 'Fetching SQL...';
     lblLatency.className = 'badge-status badge-asrs';
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
 
     try {
         const res = await fetch(`/api/lookup/${encodeURIComponent(trayId)}`, { signal: controller.signal });
@@ -518,6 +522,10 @@ async function triggerLookup(trayId) {
         }
         lblLatency.className = 'badge-status badge-ng';
         clearDbCard();
+    } finally {
+        if (currentFetchingTray === trayId) {
+            currentFetchingTray = null;
+        }
     }
 }
 
@@ -537,9 +545,11 @@ function clearDbCard() {
     }
 
     document.getElementById('valFramePid').textContent = '--';
-    document.getElementById('valLensIndex').textContent = '--';
+    document.getElementById('valRightLensPid').textContent = '--';
     document.getElementById('valRightLensBarcode').textContent = '--';
+    document.getElementById('valLeftLensPid').textContent = '--';
     document.getElementById('valLeftLensBarcode').textContent = '--';
+    document.getElementById('valLensIndex').textContent = '--';
 
     document.getElementById('valRightSph').textContent = '--';
     document.getElementById('valRightCyl').textContent = '--';
@@ -693,7 +703,7 @@ async function loadEscalations() {
     if (search) params.append('search', search);
 
     try {
-        const res = await fetch(`/api/escalations?${params.toString()}`);
+        const res = await fetch(`/api/escalations?${params.toString()}`, { cache: 'no-store' });
         const data = await res.json();
 
         if (data.success) {
@@ -738,7 +748,7 @@ function resetDateTimeFilter() {
 
 async function checkImportMeta() {
     try {
-        const res = await fetch('/api/import_meta');
+        const res = await fetch('/api/import_meta', { cache: 'no-store' });
         const data = await res.json();
         const banner2 = document.getElementById('bannerAnalyticsImportInfo');
         if (data.success && data.meta) {
@@ -932,7 +942,7 @@ async function loadAnalytics() {
         if (start) params.append('start_time', start);
         if (end) params.append('end_time', end);
 
-        const res = await fetch(`/api/analytics?${params.toString()}`);
+        const res = await fetch(`/api/analytics?${params.toString()}`, { cache: 'no-store' });
         const data = await res.json();
 
         if (!data.success) return;

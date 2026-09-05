@@ -202,6 +202,7 @@ def get_latest_adaptive_creds():
 
 
 DB_LOCK = threading.Lock()
+LOOKUP_LOCK = threading.Lock()
 
 GLOBAL_DB_CONN = None
 
@@ -229,6 +230,8 @@ def get_fresh_db_connection():
 
         creds = get_latest_adaptive_creds()
         creds['connect_timeout'] = 3
+        creds['read_timeout'] = 4
+        creds['write_timeout'] = 3
         try:
             GLOBAL_DB_CONN = pymysql.connect(**creds)
             save_working_password(DYNAMIC_PASSWORD)
@@ -468,156 +471,154 @@ def api_lookup_tray(tray_id):
         conn = get_fresh_db_connection()
         cursor = conn.cursor()
         
-        # Step 1: Query wms.tray_monitoring securely (Rule 4 check)
-        cursor.execute("""
-            SELECT wms_fitting_id AS fitting_id, espresso_fitting_id
-            FROM wms.tray_monitoring
-            WHERE tray_id = %s LIMIT 1
-        """, (tray_id,))
-        tm_row = cursor.fetchone()
-
-        if not tm_row:
-            return jsonify({'error': f"Tray ID '{tray_id}' not found in database or is unregistered"}), 444
-        
-        fitting_id = tm_row.get('fitting_id')
-        
-        # If wms_fitting_id is 0 or missing, fall back to espresso_fitting_id
-        if not fitting_id or str(fitting_id).strip() in ('', '0'):
-            espresso_id = str(tm_row.get('espresso_fitting_id') or '').strip()
-            if not espresso_id or espresso_id in ('', '0', 'None'):
-                return jsonify({'error': f"Tray ID '{tray_id}' not found in database or is unregistered"}), 444
-            fitting_id = espresso_id
+        with LOOKUP_LOCK:
+            # Step 1: Query wms.order_items by location_id for real-time active tray contents
+            cursor.execute("SELECT fitting_id FROM wms.order_items WHERE location_id = %s LIMIT 1", (tray_id,))
+            loc_row = cursor.fetchone()
             
-        is_jit_val = "NO"
-        processing_type_val = '--'
-
-        # Step 2a: Get order items — driven by indexed fitting_id (guaranteed fast)
-        cursor.execute("""
-            SELECT 
-                fitting_id,
-                nexs_order_id,
-                product_id,
-                barcode,
-                item_type,
-                shipping_package_id,
-                processing_type AS oi_processing_type
-            FROM wms.order_items
-            WHERE fitting_id = %s
-        """, (fitting_id,))
-        rows = cursor.fetchall() or []
-        
-        if not rows:
-            return jsonify({'error': f"Tray ID '{tray_id}' not found in database"}), 444
-
-        fitting_id = rows[0].get('fitting_id')
-        
-        # Step 2b: Get order_id from fitting_detail (separate small query, no JOIN overhead)
-        cursor.execute("SELECT order_id FROM wms.fitting_detail WHERE fitting_id = %s LIMIT 1", (fitting_id,))
-        fd_row = cursor.fetchone()
-        order_id = (fd_row.get('order_id') if fd_row else None) or rows[0].get('nexs_order_id')
-        
-        # Attach order_id to rows for downstream compatibility
-        for r in rows:
-            r['order_id'] = order_id
-
-        # Parse Frame PID, Frame Barcode, Right Lens PID/Barcode, Left Lens PID/Barcode
-        frame_pid = ""
-        frame_barcode = ""
-        right_lens_pid = ""
-        right_lens_barcode = ""
-        left_lens_pid = ""
-        left_lens_barcode = ""
-
-        for item in rows:
-            itype = str(item.get('item_type') or '').strip().upper()
-            pid = str(item.get('product_id') or '').strip()
-            barcode = str(item.get('barcode') or '').strip()
-
-            if 'FRAME' in itype or 'SUNGLASS' in itype or 'SPECTACLE' in itype or 'READING' in itype:
-                frame_pid = pid
-                frame_barcode = barcode
-            elif itype == 'RIGHTLENS' or 'RIGHT' in itype:
-                right_lens_pid = pid
-                right_lens_barcode = barcode
-            elif itype == 'LEFTLENS' or 'LEFT' in itype:
-                left_lens_pid = pid
-                left_lens_barcode = barcode
-
-        # ---------------------------------------------------------------------
-        # Rule 6b: Monitor Panel Data Joins (JIT & FR Tags)
-        # ---------------------------------------------------------------------
-        sp_ids = list(set([str(r['shipping_package_id']).strip() for r in rows if r.get('shipping_package_id') and str(r['shipping_package_id']).strip() not in ('', '0', 'None')]))
-        
-        mp_data = {}
-        if sp_ids:
-            format_strings = ','.join(['%s'] * len(sp_ids))
-            cursor.execute(f"SELECT shipping_package_id, jit_type, v3_fr_tag FROM nexs_dp.monitor_panel_data WHERE shipping_package_id IN ({format_strings})", tuple(sp_ids))
-            for mp_row in cursor.fetchall():
-                mp_data[str(mp_row['shipping_package_id']).strip()] = mp_row
-
-        for r in rows:
-            spid = str(r.get('shipping_package_id') or '').strip()
-            if spid in mp_data:
-                j_val = str(mp_data[spid].get('jit_type') or '').strip().upper()
-                if j_val == 'LENS LAB':
-                    is_jit_val = 'AUTO'
-                elif j_val == 'EXTERNAL VENDOR' and is_jit_val != 'AUTO':
-                    is_jit_val = 'MANUAL'
+            if loc_row and loc_row.get('fitting_id'):
+                fitting_id = loc_row.get('fitting_id')
+            else:
+                # Step 1b: Fallback to wms.tray_monitoring (stale ledger safety net)
+                cursor.execute("""
+                    SELECT wms_fitting_id AS fitting_id, espresso_fitting_id, identifier
+                    FROM wms.tray_monitoring
+                    WHERE tray_id = %s
+                    ORDER BY updated_at DESC LIMIT 1
+                """, (tray_id,))
+                tm_row = cursor.fetchone()
+                
+                if not tm_row:
+                    return jsonify({'error': f"Tray ID '{tray_id}' not found in database or is unregistered"}), 444
+                
+                identifier = str(tm_row.get('identifier') or '').strip().upper()
+                if identifier == 'DISCARD':
+                    return jsonify({'error': f"Tray '{tray_id}' not found (currently empty or discarded)"}), 444
+                
+                fitting_id = tm_row.get('fitting_id')
+                
+                # If wms_fitting_id is 0 or missing, fall back to espresso_fitting_id
+                if not fitting_id or str(fitting_id).strip() in ('', '0'):
+                    espresso_id = str(tm_row.get('espresso_fitting_id') or '').strip()
+                    if not espresso_id or espresso_id in ('', '0', 'None'):
+                        return jsonify({'error': f"Tray ID '{tray_id}' not found in database or is unregistered"}), 444
+                    fitting_id = espresso_id
+                
+            # Step 2: Query wms.order_items safely
+            cursor.execute("""
+                SELECT fitting_id, nexs_order_id, product_id, barcode, item_type, power_id, shipping_package_id, processing_type AS oi_processing_type
+                FROM wms.order_items
+                WHERE fitting_id = %s
+            """, (fitting_id,))
+            rows = cursor.fetchall()
+            
+            if not rows:
+                return jsonify({'error': f"No item records found for Fitting ID {fitting_id}"}), 444
+                
+            # Step 2b: Get order_id from fitting_detail (separate small query, no JOIN overhead)
+            cursor.execute("SELECT order_id FROM wms.fitting_detail WHERE fitting_id = %s LIMIT 1", (fitting_id,))
+            fd_row = cursor.fetchone()
+            order_id = str(fd_row.get('order_id') if fd_row else '')
+            if not order_id or order_id in ('0', 'None'):
+                order_id = next((str(r.get('nexs_order_id')).strip() for r in rows if r.get('nexs_order_id') and str(r.get('nexs_order_id')).strip() not in ('0', 'None')), '')
+            
+            # Safely fetch is_jit and processing_type from monitor_panel_data
+            sp_ids = list(set([str(r['shipping_package_id']).strip() for r in rows if r.get('shipping_package_id') and str(r['shipping_package_id']).strip() not in ('', '0', 'None')]))
+            
+            mp_data = {}
+            if sp_ids:
+                format_strings = ','.join(['%s'] * len(sp_ids))
+                cursor.execute(f"SELECT shipping_package_id, jit_type, v3_fr_tag FROM nexs_dp.monitor_panel_data WHERE shipping_package_id IN ({format_strings})", tuple(sp_ids))
+                for mr in cursor.fetchall():
+                    sp = str(mr.get('shipping_package_id', '')).strip()
+                    mp_data[sp] = {
+                        'jit': str(mr.get('jit_type') or 'NO').strip().upper(),
+                        'fr': str(mr.get('v3_fr_tag') or '--').strip().upper()
+                    }
                     
-                p_val = str(mp_data[spid].get('v3_fr_tag') or '').strip()
-                if p_val and p_val != 'None':
-                    processing_type_val = p_val
+            # Check processing_type
+            is_jit_val = 'NO'
+            processing_type_val = '--'
+            for r in rows:
+                sp = str(r.get('shipping_package_id')).strip()
+                if sp in mp_data:
+                    j_val = mp_data[sp]['jit']
+                    if j_val == 'LENS LAB':
+                        is_jit_val = 'AUTO'
+                    elif j_val == 'EXTERNAL VENDOR' and is_jit_val != 'AUTO':
+                        is_jit_val = 'MANUAL'
+                    
+                    p_val = mp_data[sp]['fr']
+                    if p_val and p_val != '--':
+                        processing_type_val = p_val
+                        break
+            
+            frame_pid = ""
+            frame_barcode = ""
+            right_lens_pid = ""
+            right_lens_barcode = ""
+            right_power_id = ""
+            left_lens_pid = ""
+            left_lens_barcode = ""
+            left_power_id = ""
+            
+            for r in rows:
+                itype = str(r.get('item_type') or '').strip().upper()
+                pid = str(r.get('product_id') or '').strip()
+                bcode = str(r.get('barcode') or '').strip()
+                pwr_id = str(r.get('power_id') or '').strip()
+                
+                if itype == 'FRAME':
+                    frame_pid = pid
+                    frame_barcode = bcode
+                elif itype == 'RIGHTLENS':
+                    right_lens_pid = pid
+                    right_lens_barcode = bcode
+                    right_power_id = pwr_id
+                elif itype == 'LEFTLENS':
+                    left_lens_pid = pid
+                    left_lens_barcode = bcode
+                    left_power_id = pwr_id
+                    
+            # Fetch Right Lens Power
+            right_power = {}
+            if right_power_id and right_power_id not in ('', '0', 'None'):
+                cursor.execute("SELECT lens_index, sph, cyl, axis, ap AS addn, lensname FROM wms.power WHERE id = %s LIMIT 1", (right_power_id,))
+            elif right_lens_pid and right_lens_pid not in ('', '0'):
+                cursor.execute("SELECT lens_index, sph, cyl, axis, ap AS addn, lensname FROM wms.power WHERE product_id = %s LIMIT 1", (right_lens_pid,))
+            r_row = cursor.fetchone() if (right_power_id or right_lens_pid) else None
+            
+            if r_row:
+                right_power = {
+                    'sph': str(r_row.get('sph') or ''),
+                    'cyl': str(r_row.get('cyl') or ''),
+                    'axis': str(r_row.get('axis') or ''),
+                    'addn': str(r_row.get('addn') or '')
+                }
+                lens_index = str(r_row.get('lens_index') or '')
+                lens_name = str(r_row.get('lensname') or '')
+            else:
+                lens_index = ""
+                lens_name = ""
+                
+            # Fetch Left Lens Power
+            left_power = {}
+            if left_power_id and left_power_id not in ('', '0', 'None'):
+                cursor.execute("SELECT lens_index, sph, cyl, axis, ap AS addn, lensname FROM wms.power WHERE id = %s LIMIT 1", (left_power_id,))
+            elif left_lens_pid and left_lens_pid not in ('', '0'):
+                cursor.execute("SELECT lens_index, sph, cyl, axis, ap AS addn, lensname FROM wms.power WHERE product_id = %s LIMIT 1", (left_lens_pid,))
+            l_row = cursor.fetchone() if (left_power_id or left_lens_pid) else None
+            
+            if l_row:
+                left_power = {
+                    'sph': str(l_row.get('sph') or ''),
+                    'cyl': str(l_row.get('cyl') or ''),
+                    'axis': str(l_row.get('axis') or ''),
+                    'addn': str(l_row.get('addn') or '')
+                }
+                if not lens_index and l_row.get('lens_index'): lens_index = str(l_row.get('lens_index') or '')
+                if not lens_name and l_row.get('lensname'): lens_name = str(l_row.get('lensname') or '')
 
-        # ---------------------------------------------------------------------
-        # BULLETPROOF OPTICAL POWER LOOKUP (BYPASSED ORDER_ID)
-        # ---------------------------------------------------------------------
-        right_power = {}
-        left_power = {}
-        lens_index = ""
-        lens_name = ""
-        # Fetch Right Lens Power directly by its PID
-        if right_lens_pid and right_lens_pid.strip() not in ('', '0'):
-            try:
-                cursor.execute("""
-                    SELECT lens_index, sph, cyl, axis, ap AS addn, lensname 
-                    FROM wms.power 
-                    WHERE product_id = %s LIMIT 1
-                """, (right_lens_pid,))
-                r_row = cursor.fetchone()
-                if r_row:
-                    right_power = {
-                        'sph': str(r_row.get('sph') or ''),
-                        'cyl': str(r_row.get('cyl') or ''),
-                        'axis': str(r_row.get('axis') or ''),
-                        'addn': str(r_row.get('addn') or '')
-                    }
-                    if r_row.get('lens_index'): lens_index = str(r_row.get('lens_index'))
-                    if r_row.get('lensname'): lens_name = str(r_row.get('lensname'))
-            except Exception as pe:
-                print(f"[!] Right Power lookup warning: {pe}")
-
-        # Fetch Left Lens Power directly by its PID (allows duplicate PIDs to apply to both)
-        if left_lens_pid and left_lens_pid.strip() not in ('', '0'):
-            try:
-                cursor.execute("""
-                    SELECT lens_index, sph, cyl, axis, ap AS addn, lensname 
-                    FROM wms.power 
-                    WHERE product_id = %s LIMIT 1
-                """, (left_lens_pid,))
-                l_row = cursor.fetchone()
-                if l_row:
-                    left_power = {
-                        'sph': str(l_row.get('sph') or ''),
-                        'cyl': str(l_row.get('cyl') or ''),
-                        'axis': str(l_row.get('axis') or ''),
-                        'addn': str(l_row.get('addn') or '')
-                    }
-                    if l_row.get('lens_index'): lens_index = str(l_row.get('lens_index'))
-                    if l_row.get('lensname'): lens_name = str(l_row.get('lensname'))
-            except Exception as pe:
-                print(f"[!] Left Power lookup warning: {pe}")
-
-        # Stage 4: Removed (Merged into Step 1 to save 250ms network roundtrip)
 
         elapsed_ms = round((time.time() - start_time) * 1000, 2)
 
@@ -721,7 +722,16 @@ def filter_escalation_records(records):
             if r_dt > et:
                 continue
 
+        # Store the normalized datetime in the record temporarily for sorting
+        r['_r_dt'] = r_dt
         filtered.append(r)
+
+    # Sort newest to oldest (descending) based on the computed timestamp
+    filtered.sort(key=lambda x: x.get('_r_dt', ''), reverse=True)
+    
+    # Clean up the temporary sort key
+    for r in filtered:
+        r.pop('_r_dt', None)
 
     return filtered
 
