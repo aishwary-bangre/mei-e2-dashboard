@@ -78,4 +78,22 @@ This document catalogs all technical edge cases, failure modes, root causes, and
 ### EC-11: Proxy DoS Hangs & Socket Deadlocks
 * **Symptom**: Scanning trays rapidly or when the `adaptive.exe` proxy silently drops packets causes the PyMySQL thread to hang indefinitely, permanently freezing the Flask server UI for all users.
 * **Root Cause**: PyMySQL's default socket behavior has infinite read/write timeouts. If the proxy silently drops TCP packets, PyMySQL waits forever for a response, locking the thread.
-* **Defensive Fix**: Wrapped the lookup execution in a global `threading.Lock()` and enforced strict socket boundaries on PyMySQL: `connect_timeout=3`, `read_timeout=4`, and `write_timeout=3`.
+### EC-12: Independent Dual-Lens Power Extraction & Fallback
+* **Symptom**: Trays containing replacement lenses or split prescriptions randomly returned empty optical powers for one of the lenses.
+* **Root Cause**: Previous logic attempted to query the `wms.power` table by `order_id` and blindly matched rows based on string tags (`'right'` or `'left'`). This failed completely when lenses had split `power_id`s or lacked directional strings.
+* **Defensive Fix**: The backend now performs hyper-specific **Independent Dual-Lens Extraction**. It queries the database independently for the Right Lens and the Left Lens. For each lens, it first attempts to query `wms.power WHERE id = {power_id}`. If the WMS failed to populate `power_id`, it automatically falls back to `wms.power WHERE product_id = {lens_pid}`.
+
+### EC-13: Preventing FR Tag Corruption (Rule 13)
+* **Symptom**: Valid `FR1` or `FR2` tags were randomly being overwritten by useless `--` or `PL` tags.
+* **Root Cause**: The system attempted to merge the `processing_type` from `wms.order_items` with the `v3_fr_tag` from `nexs_dp.monitor_panel_data`.
+* **Defensive Fix**: Strict Isolation. The backend now completely ignores `processing_type` from `wms.order_items` and STRICTLY pulls the FR tag only from `nexs_dp.monitor_panel_data.v3_fr_tag`.
+
+### EC-14: JIT Processing Type String Overrides
+* **Symptom**: Trays showed as `NO` for JIT, even when they were clearly Lens Lab or Vendor trays.
+* **Root Cause**: The standard `shipping_package_id` monitor panel check doesn't cover all JIT scenarios.
+* **Defensive Fix**: Implemented a String-Matching Fallback: If `jit_type` equals `LENS LAB`, `is_jit` is forcibly upgraded to `AUTO`. If it equals `EXTERNAL VENDOR`, it is upgraded to `MANUAL`.
+
+### EC-15: Missing `order_id` in `wms.fitting_detail`
+* **Symptom**: `order_id` displays as blank/missing in the UI for certain orders.
+* **Root Cause**: The `wms.fitting_detail` table occasionally drops or fails to link the `order_id` to a `fitting_id`.
+* **Defensive Fix**: The backend first tries to fetch `order_id` securely from `wms.fitting_detail`. If it returns null or `0`, it iterates through all rows fetched from `wms.order_items` and safely extracts the `nexs_order_id` as a fallback.
