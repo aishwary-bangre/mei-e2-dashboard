@@ -173,6 +173,7 @@ function renderAllDropdownSelects() {
     renderSelectElement('selIssue', cachedDropdownOptions.issue || [], true);
 
     onFailCategoryChange();
+    onStatusChange();
     autoSelectCurrentShift();
 }
 
@@ -186,13 +187,17 @@ function renderSelectElement(selectId, optionsList, isSearchable = false) {
         const ts = tsInstances[selectId];
         const curVal = ts.getValue();
         ts.clearOptions();
+        
         optionsList.forEach(opt => {
             ts.addOption({value: opt, text: opt});
         });
+
         if (curVal && optionsList.includes(curVal)) {
             ts.setValue(curVal);
-        } else if (optionsList.length > 0) {
+        } else if (!isSearchable && optionsList.length > 0) {
             ts.setValue(optionsList[0]);
+        } else if (isSearchable) {
+            ts.setValue('');
         }
         ts.refreshOptions(false);
     } else {
@@ -202,7 +207,10 @@ function renderSelectElement(selectId, optionsList, isSearchable = false) {
         if (isSearchable) {
             const defaultPlaceholder = document.createElement('option');
             defaultPlaceholder.value = '';
-            defaultPlaceholder.textContent = 'Search & Select...';
+            defaultPlaceholder.textContent = '';
+            defaultPlaceholder.disabled = true;
+            defaultPlaceholder.hidden = true;
+            defaultPlaceholder.selected = true;
             el.appendChild(defaultPlaceholder);
         }
 
@@ -213,7 +221,7 @@ function renderSelectElement(selectId, optionsList, isSearchable = false) {
             if (curVal && optionsList.includes(curVal)) {
                 if (opt === curVal) optionEl.selected = true;
             } else {
-                if (idx === 0) optionEl.selected = true;
+                if (!isSearchable && idx === 0) optionEl.selected = true;
             }
             el.appendChild(optionEl);
         });
@@ -228,9 +236,14 @@ function renderSelectElement(selectId, optionsList, isSearchable = false) {
             tsConfig.controlInput = null;
         } else {
             tsConfig.maxOptions = null;
+            tsConfig.placeholder = 'Search primary issue / cause...';
         }
 
         const ts = new TomSelect('#' + selectId, tsConfig);
+
+        if (isSearchable && (!curVal || !optionsList.includes(curVal))) {
+            ts.setValue('');
+        }
 
         if (isSearchable) {
             const positionAbove = () => {
@@ -242,13 +255,18 @@ function renderSelectElement(selectId, optionsList, isSearchable = false) {
                 const rect = control.getBoundingClientRect();
                 const dropdownContent = dropdown.querySelector('.ts-dropdown-content');
                 
-                const maxAvailableHeight = Math.max(120, rect.top - 20);
+                const spaceAbove = rect.top - 15;
+                const maxContentHeight = Math.max(100, spaceAbove - 20);
                 if (dropdownContent) {
-                    dropdownContent.style.maxHeight = (maxAvailableHeight - 10) + 'px';
+                    dropdownContent.style.maxHeight = maxContentHeight + 'px';
                 }
                 
-                const dropdownHeight = dropdown.offsetHeight || 300;
-                const topPos = rect.top + window.scrollY - dropdownHeight - 4;
+                dropdown.style.marginTop = '0px';
+                dropdown.style.marginBottom = '0px';
+                void dropdown.offsetHeight; // Force layout recalculation
+                
+                const dropdownHeight = dropdown.offsetHeight || 200;
+                const topPos = rect.top + window.scrollY - dropdownHeight - 6;
                 
                 dropdown.style.position = 'absolute';
                 dropdown.style.left = rect.left + window.scrollX + 'px';
@@ -436,6 +454,13 @@ function onFailCategoryChange() {
                 </div>
             </div>
         `;
+    } else if (category === 'FRAME' || category.includes('FRAME')) {
+        html = `
+            <div class="form-group" style="margin-bottom: 0;">
+                <label for="txtFailedFramePid" style="color:#FF7660;">⚠️ FAILED FRAME PID / BARCODE</label>
+                <input type="text" id="txtFailedFramePid" class="input-control" value="${frameVal}" placeholder="Scan/Enter Frame PID">
+            </div>
+        `;
     } else if (category === 'ALL ITEMS') {
         html = `
             <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 0;">
@@ -456,6 +481,7 @@ function onFailCategoryChange() {
     }
 
     container.innerHTML = html;
+    container.style.display = html ? 'block' : 'none';
 }
 
 function syncHeaderControls() {
@@ -470,18 +496,15 @@ function initScanner() {
     const form = document.getElementById('frmEscalation');
     let timer = null;
 
-    // Pressing ENTER inside Scan input triggers SQL lookup + form submit if ready
+    // Pressing ENTER inside Scan input triggers SQL lookup
     scanInput.addEventListener('keydown', async (e) => {
         if (e.key === 'Enter') {
             e.preventDefault();
+            e.stopPropagation();
             const trayId = scanInput.value.trim();
             if (!trayId) return;
 
-            if (!currentLookupData || currentLookupData.tray_id !== trayId) {
-                await triggerLookup(trayId);
-            } else {
-                submitEscalation(e);
-            }
+            await triggerLookup(trayId);
         }
     });
 
@@ -490,19 +513,11 @@ function initScanner() {
         if (warningElem) warningElem.style.display = 'none';
         scanInput.style.borderColor = '';
         scanInput.style.boxShadow = '';
-
-        clearTimeout(timer);
-        timer = setTimeout(() => {
-            const val = scanInput.value.trim();
-            if (val.length >= 7) {
-                triggerLookup(val);
-            }
-        }, 60);
     });
 
-    // Submitting form on ENTER key anywhere in the form
+    // Submitting form on ENTER key anywhere in the form EXCEPT scanInput
     form.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && e.target.tagName === 'INPUT') {
+        if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.id !== 'txtScanTray') {
             e.preventDefault();
             submitEscalation(e);
         }
@@ -689,7 +704,16 @@ async function submitEscalation(e) {
     if (elLeft && elLeft.value) leftBarcode = elLeft.value.trim();
     if (elFrame && elFrame.value) framePid = elFrame.value.trim();
 
-    let selectedIssue = document.getElementById('selIssue')?.value || 'OTHER';
+    const statusVal = document.getElementById('selStatus')?.value || 'NG';
+    let selectedIssue = document.getElementById('selIssue')?.value || '';
+
+    if (statusVal !== 'OK' && !selectedIssue) {
+        alert('⚠️ Please select a Primary Issue / Cause.');
+        const selIssue = document.getElementById('selIssue');
+        if (selIssue) selIssue.focus();
+        return;
+    }
+
     if (selectedIssue === 'OTHER') {
         const customTxt = document.getElementById('txtOtherIssue')?.value?.trim();
         if (customTxt) {
@@ -716,7 +740,7 @@ async function submitEscalation(e) {
         operator: document.getElementById('selOperator')?.value || '',
         fail_category: category,
         issue: selectedIssue,
-        status: document.getElementById('selStatus')?.value || 'NG',
+        status: statusVal,
         machine: document.getElementById('txtMachine')?.value || ''
     };
 
@@ -734,6 +758,7 @@ async function submitEscalation(e) {
             if (txtMachine) txtMachine.value = '';
             const otherTxtInput = document.getElementById('txtOtherIssue');
             if (otherTxtInput) otherTxtInput.value = '';
+            if (tsInstances['selIssue']) tsInstances['selIssue'].setValue('');
             onIssueChange();
             clearDbCard();
 
@@ -767,6 +792,21 @@ function onIssueChange() {
             if (txt) txt.focus();
         } else {
             container.style.display = 'none';
+        }
+    }
+}
+
+function onStatusChange() {
+    const statusVal = document.getElementById('selStatus')?.value;
+    const labelIssue = document.querySelector('label[for="selIssue"]');
+    
+    if (statusVal === 'OK') {
+        if (labelIssue) {
+            labelIssue.innerHTML = 'PRIMARY ISSUE / CAUSE <span style="font-size:0.75rem; font-weight:500; color:var(--cyan-accent); margin-left:6px;">(Optional)</span>';
+        }
+    } else {
+        if (labelIssue) {
+            labelIssue.innerHTML = 'PRIMARY ISSUE / CAUSE';
         }
     }
 }
@@ -1320,6 +1360,10 @@ function renderGenericChart(chartKey, rawData, keyField) {
             options: {
                 indexAxis: 'y',
                 responsive: true,
+                maintainAspectRatio: false,
+                layout: {
+                    padding: { left: 5, right: 20, top: 5, bottom: 5 }
+                },
                 plugins: {
                     legend: { display: false },
                     tooltip: {
@@ -1333,14 +1377,28 @@ function renderGenericChart(chartKey, rawData, keyField) {
                                 if (chartKey === 'pids' && config.data[idx] && config.data[idx].top_cause) {
                                     extra = ` | Cause: ${config.data[idx].top_cause}`;
                                 }
-                                return `Failures: ${val} (${pct})${extra}`;
+                                return `Failures: ${val.toLocaleString()} (${pct})${extra}`;
                             }
                         }
                     }
                 },
                 scales: {
                     x: { ticks: { color: '#94A3B8' }, grid: { color: 'rgba(255,255,255,0.05)' } },
-                    y: { ticks: { color: '#94A3B8' }, grid: { display: false } }
+                    y: {
+                        ticks: {
+                            color: '#94A3B8',
+                            font: { size: 10 },
+                            autoSkip: false,
+                            callback: function(value) {
+                                let label = this.getLabelForValue(value) || '';
+                                if (label.length > 28) {
+                                    return label.substring(0, 25) + '...';
+                                }
+                                return label;
+                            }
+                        },
+                        grid: { display: false }
+                    }
                 }
             }
         });

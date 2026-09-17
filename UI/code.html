@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>MEI E2 Escalation System - Analytics &amp; Trends</title>
+<!-- Tailwind CSS v3 with Plugins -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<!-- Tailwind Configuration -->
+<script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              base: '#070b14',
+              surface: '#0d1527',
+              card: '#121d33',
+              cardHover: '#16243f',
+              border: '#1f2e4d',
+              borderLight: '#2b3f68',
+              cyan: '#06d6a0',
+              neonCyan: '#00f2fe',
+              accentRed: '#ff4b4b',
+              accentAmber: '#ffb703',
+              accentPurple: '#a855f7',
+              accentPink: '#f43f5e'
+            }
+          },
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['JetBrains Mono', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'monospace'],
+          },
+          boxShadow: {
+            'glow-cyan': '0 0 20px -3px rgba(0, 242, 254, 0.35)',
+            'glow-cyan-sm': '0 0 10px -2px rgba(0, 242, 254, 0.3)',
+            'glow-red': '0 0 16px -2px rgba(255, 75, 75, 0.4)',
+            'card-elevated': '0 8px 30px rgba(2, 6, 23, 0.6)',
+          }
+        }
+      }
+    }
+  </script>
+<!-- Custom Styles for Charts & Industrial Dashboard Look -->
+<style data-purpose="custom-scroll-and-glow">
+    /* Custom Industrial Scrollbar */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #070b14;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #1e293b;
+      border-radius: 4px;
+      border: 1px solid #334155;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #334155;
+    }
+
+    /* Grid lines for charts */
+    .chart-grid-line {
+      stroke: #192742;
+      stroke-dasharray: 4 4;
+    }
+    .chart-tick-text {
+      fill: #64748b;
+      font-size: 10px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .hourly-wave-glow {
+      filter: drop-shadow(0 0 8px rgba(0, 242, 254, 0.7));
+    }
+  </style>
+<style data-purpose="toggle-and-pills">
+    .pill-tab-active {
+      background: linear-gradient(180deg, rgba(0, 242, 254, 0.15) 0%, rgba(4, 30, 54, 0.4) 100%);
+      border: 1.5px solid #00f2fe;
+      box-shadow: 0 0 15px rgba(0, 242, 254, 0.25);
+    }
+    .pill-tab-inactive {
+      background: #0f172a;
+      border: 1px solid #1e293b;
+    }
+    .chart-toggle-btn.active {
+      background: #00e5ff;
+      color: #04101e;
+      font-weight: 700;
+    }
+    .chart-toggle-btn.inactive {
+      color: #94a3b8;
+    }
+  </style>
+</head>
+<body class="bg-[#070b14] text-slate-200 min-h-screen font-sans antialiased overflow-x-hidden selection:bg-cyan-500 selection:text-black">
+<!-- BEGIN: MainHeader -->
+<header class="w-full bg-[#0d1527] border-b border-[#1f2e4d] sticky top-0 z-50 backdrop-blur-md bg-opacity-95 px-4 sm:px-6 py-3">
+<div class="max-w-[1920px] mx-auto flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+<!-- System Identity Branding -->
+<div class="flex items-center gap-3.5">
+<div class="w-11 h-11 rounded-xl bg-gradient-to-br from-cyan-400 to-blue-600 flex items-center justify-center shadow-glow-cyan-sm text-slate-950 font-black text-xl">
+<svg class="w-6 h-6 text-[#04101e]" fill="currentColor" viewbox="0 0 24 24">
+<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path>
+</svg>
+</div>
+<div>
+<div class="flex items-center gap-2.5">
+<h1 class="text-lg sm:text-xl font-bold tracking-tight text-white flex items-center gap-2">
+              MEI E2 Escalation System
+            </h1>
+<span class="px-2 py-0.5 rounded-full text-[10px] font-mono tracking-wide bg-blue-950 text-cyan-300 border border-cyan-800/60 uppercase">
+              Shop Floor E2 Line
+            </span>
+</div>
+<p class="text-xs text-slate-400 font-medium">Factory Quality &amp; Escalation Analytics Platform</p>
+</div>
+</div>
+<!-- Station Controls & Live Database Status -->
+<div class="flex flex-wrap items-center gap-2.5 sm:gap-3 text-xs">
+<!-- Shift Selector -->
+<div class="flex items-center bg-[#121d33] border border-[#1f2e4d] rounded-lg px-3 py-1.5 shadow-sm">
+<span class="text-slate-400 font-semibold uppercase tracking-wider text-[10px] mr-2 font-mono">Shift:</span>
+<div class="flex items-center gap-1.5 text-white font-medium cursor-pointer">
+<span>Shift B</span>
+<svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M19 9l-7 7-7-7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+</div>
+</div>
+<!-- Shift In-Charge (IC) -->
+<div class="flex items-center bg-[#121d33] border border-[#1f2e4d] rounded-lg px-3 py-1.5 shadow-sm">
+<span class="text-slate-400 font-semibold uppercase tracking-wider text-[10px] mr-2 font-mono">Shift IC:</span>
+<div class="flex items-center gap-2">
+<span class="text-cyan-300 font-mono font-semibold">ADITI</span>
+<svg class="w-3.5 h-3.5 text-slate-400 cursor-pointer" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M19 9l-7 7-7-7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+<button class="text-slate-400 hover:text-white transition-colors ml-0.5" title="Settings">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path><path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+</button>
+</div>
+</div>
+<!-- Operator Selector -->
+<div class="flex items-center bg-[#121d33] border border-[#1f2e4d] rounded-lg px-3 py-1.5 shadow-sm">
+<span class="text-slate-400 font-semibold uppercase tracking-wider text-[10px] mr-2 font-mono">Operator:</span>
+<div class="flex items-center gap-2">
+<span class="text-amber-400 font-mono font-semibold">AMIRUN</span>
+<svg class="w-3.5 h-3.5 text-slate-400 cursor-pointer" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M19 9l-7 7-7-7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+<button class="text-slate-400 hover:text-white transition-colors ml-0.5" title="Settings">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path><path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+</button>
+</div>
+</div>
+<!-- Connection Status Indicator -->
+<div class="flex items-center gap-2 bg-emerald-950/60 border border-emerald-600/40 text-emerald-400 px-3 py-1.5 rounded-lg">
+<span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+<span class="font-mono text-xs font-semibold">MySQL Connected</span>
+</div>
+<!-- Dark Mode Indicator Pill -->
+<div class="p-1.5 rounded-lg bg-[#121d33] border border-[#1f2e4d] text-amber-300">
+<svg class="w-4 h-4" fill="currentColor" viewbox="0 0 20 20">
+<path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path>
+</svg>
+</div>
+</div>
+</div>
+</header>
+<!-- END: MainHeader -->
+<!-- BEGIN: NavigationTabs -->
+<nav aria-label="System Tabs" class="max-w-[1920px] mx-auto px-4 sm:px-6 pt-4 pb-2">
+<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+<!-- Inactive Tab 1 -->
+<a class="pill-tab-inactive rounded-xl p-3.5 flex items-center justify-center gap-2 text-slate-400 hover:text-slate-200 hover:border-slate-600 transition-all group" href="#tab1">
+<span class="text-base group-hover:scale-110 transition-transform">📄</span>
+<span class="font-semibold text-sm tracking-wide">Tab 1: Escalation Logging &amp; Entries</span>
+</a>
+<!-- Active Tab 2 -->
+<div class="pill-tab-active rounded-xl p-3.5 flex items-center justify-center gap-2 text-white transition-all cursor-default">
+<span class="text-base animate-pulse">📊</span>
+<span class="font-bold text-sm tracking-wide text-cyan-300">Tab 2: Analytics &amp; Trends</span>
+<span class="ml-2 w-2 h-2 rounded-full bg-cyan-400"></span>
+</div>
+</div>
+</nav>
+<!-- END: NavigationTabs -->
+<main class="max-w-[1920px] mx-auto px-4 sm:px-6 py-3 space-y-4">
+<!-- BEGIN: AnalyticsControlsToolbar -->
+<section class="bg-[#0d1527] border border-[#1f2e4d] rounded-2xl p-4 sm:p-5 shadow-card-elevated" data-purpose="analytics-controls">
+<div class="flex flex-col xl:flex-row items-start xl:items-center justify-between gap-4">
+<!-- Section Title & Excel Import -->
+<div class="flex flex-wrap items-center gap-3 sm:gap-4">
+<div class="flex items-center gap-2.5">
+<span class="p-2 rounded-lg bg-cyan-950/70 border border-cyan-800/60 text-cyan-400">
+<svg class="w-5 h-5" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+</span>
+<h2 class="text-lg font-bold tracking-tight text-white">Analytics Controls</h2>
+</div>
+<button class="flex items-center gap-2 bg-gradient-to-r from-teal-700 to-emerald-600 hover:from-teal-600 hover:to-emerald-500 text-white font-semibold text-xs px-3.5 py-2.5 rounded-lg border border-teal-500/30 shadow-sm transition-all transform active:scale-95">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+<span>IMPORT EXCEL FOR ANALYTICS</span>
+</button>
+</div>
+<!-- Date & Time Range Selectors and Action Buttons -->
+<div class="flex flex-wrap items-center gap-3 sm:gap-4 w-full xl:w-auto">
+<!-- From Date & Time -->
+<div class="flex flex-col flex-1 sm:flex-initial">
+<span class="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-semibold mb-1">From Date &amp; Time</span>
+<div class="flex items-center bg-[#121d33] border border-[#1f2e4d] rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus-within:border-cyan-400">
+<span>31-08-2026 06:40 PM</span>
+<button class="ml-2 text-slate-400 hover:text-cyan-300">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+</button>
+</div>
+</div>
+<!-- To Date & Time -->
+<div class="flex flex-col flex-1 sm:flex-initial">
+<span class="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-semibold mb-1">To Date &amp; Time</span>
+<div class="flex items-center bg-[#121d33] border border-[#1f2e4d] rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus-within:border-cyan-400">
+<span>04-09-2026 03:06 PM</span>
+<button class="ml-2 text-slate-400 hover:text-cyan-300">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+</button>
+</div>
+</div>
+<!-- Buttons Group -->
+<div class="flex items-end gap-2.5 pt-4 sm:pt-0">
+<!-- Filter Button -->
+<button class="h-[38px] px-5 bg-gradient-to-r from-cyan-400 to-cyan-500 hover:from-cyan-300 hover:to-cyan-400 text-slate-950 font-bold text-xs rounded-lg shadow-glow-cyan flex items-center gap-1.5 transition-all active:scale-95 uppercase tracking-wider">
+<svg class="w-3.5 h-3.5 fill-current" viewbox="0 0 20 20"><path clip-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" fill-rule="evenodd"></path></svg>
+              FILTER
+            </button>
+<!-- Reset Button -->
+<button class="h-[38px] px-3.5 bg-[#162238] hover:bg-[#1e2f4e] text-slate-300 border border-[#2b3f68] font-bold text-xs rounded-lg flex items-center gap-1.5 transition-all">
+<svg class="w-3.5 h-3.5 text-cyan-400" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+<span>RESET</span>
+</button>
+</div>
+</div>
+</div>
+</section>
+<!-- END: AnalyticsControlsToolbar -->
+<!-- BEGIN: ExecutiveKpiCards -->
+<section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" data-purpose="executive-kpis">
+<!-- Card 1: Total Escalations -->
+<div class="bg-[#0d1527] border border-[#1f2e4d] rounded-2xl p-5 shadow-card-elevated relative overflow-hidden flex flex-col justify-between">
+<div class="flex items-center justify-between text-slate-400">
+<span class="text-xs font-mono font-semibold tracking-wider uppercase">TOTAL ESCALATIONS</span>
+<span class="text-xs bg-cyan-950 text-cyan-300 px-2 py-0.5 rounded font-mono border border-cyan-800/50">+4 vs prev</span>
+</div>
+<div class="my-3 text-center">
+<span class="text-4xl lg:text-5xl font-extrabold text-cyan-400 font-mono tracking-tight drop-shadow-[0_0_15px_rgba(0,242,254,0.4)]">
+            34
+          </span>
+</div>
+<div class="text-[11px] text-slate-400 flex items-center justify-between border-t border-[#1a263e] pt-2">
+<span>Active filter scope</span>
+<span class="text-cyan-400 font-mono font-semibold">100% indexed</span>
+</div>
+</div>
+<!-- Card 2: Defect NG Rate -->
+<div class="bg-[#0d1527] border border-red-950/60 rounded-2xl p-5 shadow-card-elevated relative overflow-hidden flex flex-col justify-between">
+<div class="flex items-center justify-between text-slate-400">
+<span class="text-xs font-mono font-semibold tracking-wider uppercase">NG RATE (%)</span>
+<span class="text-xs bg-red-950/80 text-red-400 px-2 py-0.5 rounded font-mono border border-red-800/60">CRITICAL</span>
+</div>
+<div class="my-3 text-center">
+<span class="text-4xl lg:text-5xl font-extrabold text-[#ff4343] font-mono tracking-tight drop-shadow-[0_0_15px_rgba(255,75,75,0.4)]">
+            100%
+          </span>
+</div>
+<div class="text-[11px] text-slate-400 flex items-center justify-between border-t border-[#1a263e] pt-2">
+<span>Threshold Target</span>
+<span class="text-slate-400 font-mono">&lt; 2.5%</span>
+</div>
+</div>
+<!-- Card 3: Top Defect Issue -->
+<div class="bg-[#0d1527] border border-[#1f2e4d] rounded-2xl p-5 shadow-card-elevated relative overflow-hidden flex flex-col justify-between">
+<div class="flex items-center justify-between text-slate-400">
+<span class="text-xs font-mono font-semibold tracking-wider uppercase">TOP DEFECT ISSUE</span>
+<span class="text-xs bg-amber-950 text-amber-300 px-2 py-0.5 rounded font-mono border border-amber-800/50">82.3% Share</span>
+</div>
+<div class="my-3 text-center">
+<span class="text-xl lg:text-2xl font-black text-amber-400 font-mono tracking-wide uppercase">
+            WRONG PICKING
+          </span>
+</div>
+<div class="text-[11px] text-slate-400 flex items-center justify-between border-t border-[#1a263e] pt-2">
+<span>Primary line category</span>
+<span class="text-amber-400 font-mono font-semibold">28 Incidents</span>
+</div>
+</div>
+<!-- Card 4: Active Shift Volume -->
+<div class="bg-[#0d1527] border border-[#1f2e4d] rounded-2xl p-5 shadow-card-elevated relative overflow-hidden flex flex-col justify-between">
+<div class="flex items-center justify-between text-slate-400">
+<div class="text-xs font-mono font-semibold tracking-wider uppercase">
+            ACTIVE SHIFT VOLUME <span class="text-cyan-400 font-bold">(SHIFT B)</span>
+</div>
+<span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+</div>
+<div class="my-3 text-center">
+<span class="text-4xl lg:text-5xl font-extrabold text-emerald-400 font-mono tracking-tight">
+            32
+          </span>
+</div>
+<div class="text-[11px] text-slate-400 flex items-center justify-between border-t border-[#1a263e] pt-2">
+<span>Shift load balance</span>
+<span class="text-emerald-400 font-mono font-semibold">94.1% of Total</span>
+</div>
+</div>
+</section>
+<!-- END: ExecutiveKpiCards -->
+<!-- BEGIN: PrimaryChartsSection -->
+<section class="grid grid-cols-1 lg:grid-cols-3 gap-4" data-purpose="failure-breakdowns-grid">
+<!-- Chart 1: Top Failure Reasons -->
+<div class="bg-[#0d1527] border border-[#1f2e4d] rounded-2xl p-5 flex flex-col justify-between shadow-card-elevated">
+<!-- Header & Toggles -->
+<div class="flex items-center justify-between pb-3 border-b border-[#18233c]">
+<div class="flex items-center gap-2">
+<span class="text-base">🎯</span>
+<h3 class="font-bold text-sm text-white tracking-wide">Top Failure Reasons</h3>
+</div>
+<div class="flex items-center bg-[#070b14] p-1 rounded-lg border border-[#1e2a44] text-[11px]">
+<button class="chart-toggle-btn px-2.5 py-1 rounded inactive flex items-center gap-1 hover:text-white">
+<span>🍩 Donut</span>
+</button>
+<button class="chart-toggle-btn px-2.5 py-1 rounded active flex items-center gap-1">
+<span>📊 Bar</span>
+</button>
+</div>
+</div>
+<!-- Failure Breakdown Bars Container -->
+<div class="py-4 space-y-4">
+<!-- Item 1: Wrong Picking -->
+<div class="space-y-1.5">
+<div class="flex justify-between text-xs font-mono">
+<span class="text-slate-300 font-medium">WRONG PICKING</span>
+<span class="text-red-400 font-bold">28 (82.4%)</span>
+</div>
+<div class="h-6 w-full bg-[#121c31] rounded-md overflow-hidden p-0.5 border border-[#1d2d4c]">
+<div class="h-full bg-gradient-to-r from-red-500 to-[#ff4b4b] rounded" style="width: 82.4%;"></div>
+</div>
+</div>
+<!-- Item 2: Unassigned -->
+<div class="space-y-1.5">
+<div class="flex justify-between text-xs font-mono">
+<span class="text-slate-300 font-medium">UNASSIGNED</span>
+<span class="text-cyan-400 font-bold">3 (8.8%)</span>
+</div>
+<div class="h-6 w-full bg-[#121c31] rounded-md overflow-hidden p-0.5 border border-[#1d2d4c]">
+<div class="h-full bg-cyan-400 rounded" style="width: 8.8%;"></div>
+</div>
+</div>
+<!-- Item 3: Wrong Power Add / AP -->
+<div class="space-y-1.5">
+<div class="flex justify-between text-xs font-mono">
+<span class="text-slate-300 font-medium">WRONG POWER ADD / AP</span>
+<span class="text-amber-400 font-bold">2 (5.9%)</span>
+</div>
+<div class="h-6 w-full bg-[#121c31] rounded-md overflow-hidden p-0.5 border border-[#1d2d4c]">
+<div class="h-full bg-amber-400 rounded" style="width: 5.9%;"></div>
+</div>
+</div>
+<!-- Item 4: Coating Scratch -->
+<div class="space-y-1.5">
+<div class="flex justify-between text-xs font-mono">
+<span class="text-slate-300 font-medium">COATING SCRATCH</span>
+<span class="text-emerald-400 font-bold">1 (2.9%)</span>
+</div>
+<div class="h-6 w-full bg-[#121c31] rounded-md overflow-hidden p-0.5 border border-[#1d2d4c]">
+<div class="h-full bg-emerald-400 rounded" style="width: 2.9%;"></div>
+</div>
+</div>
+</div>
+<!-- Metric Scale Footer -->
+<div class="flex justify-between text-[10px] font-mono text-slate-500 border-t border-[#18233c] pt-2">
+<span>0</span>
+<span>10</span>
+<span>20</span>
+<span>30</span>
+<span>40 (Max)</span>
+</div>
+</div>
+<!-- Chart 2: Operator Failure Volume -->
+<div class="bg-[#0d1527] border border-[#1f2e4d] rounded-2xl p-5 flex flex-col justify-between shadow-card-elevated">
+<!-- Header & Shift Selector -->
+<div class="flex items-center justify-between pb-3 border-b border-[#18233c]">
+<div class="flex items-center gap-2">
+<span class="text-base">👤</span>
+<h3 class="font-bold text-sm text-white tracking-wide">Operator Failure Volume</h3>
+</div>
+<div class="flex items-center gap-1.5">
+<!-- Filter Dropdown -->
+<div class="bg-[#121e36] text-[11px] font-mono px-2 py-1 rounded border border-[#223559] text-cyan-300 flex items-center gap-1 cursor-pointer">
+<span>All Shifts</span>
+<svg class="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M19 9l-7 7-7-7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+</div>
+<!-- Bar Toggle -->
+<div class="flex items-center bg-[#070b14] p-1 rounded-lg border border-[#1e2a44] text-[11px]">
+<button class="chart-toggle-btn px-2 py-0.5 rounded active">📊 Bar</button>
+</div>
+</div>
+</div>
+<!-- Operator Graph Breakdown -->
+<div class="py-4 space-y-4">
+<!-- Operator: Amirun -->
+<div class="space-y-1.5">
+<div class="flex justify-between text-xs font-mono">
+<span class="text-slate-200 font-semibold">AMIRUN</span>
+<span class="text-red-400 font-bold">26 Failures</span>
+</div>
+<div class="h-6 w-full bg-[#121c31] rounded-md overflow-hidden p-0.5 border border-[#1d2d4c]">
+<div class="h-full bg-gradient-to-r from-red-500 to-[#ff4b4b] rounded" style="width: 86.6%;"></div>
+</div>
+</div>
+<!-- Operator: Prachi -->
+<div class="space-y-1.5">
+<div class="flex justify-between text-xs font-mono">
+<span class="text-slate-200 font-semibold">PRACHI</span>
+<span class="text-cyan-400 font-bold">5 Failures</span>
+</div>
+<div class="h-6 w-full bg-[#121c31] rounded-md overflow-hidden p-0.5 border border-[#1d2d4c]">
+<div class="h-full bg-cyan-400 rounded" style="width: 16.6%;"></div>
+</div>
+</div>
+<!-- Operator: Unassigned -->
+<div class="space-y-1.5">
+<div class="flex justify-between text-xs font-mono">
+<span class="text-slate-200 font-semibold">UNASSIGNED</span>
+<span class="text-amber-400 font-bold">3 Failures</span>
+</div>
+<div class="h-6 w-full bg-[#121c31] rounded-md overflow-hidden p-0.5 border border-[#1d2d4c]">
+<div class="h-full bg-amber-400 rounded" style="width: 10%;"></div>
+</div>
+</div>
+<!-- Analytical Callout Pill -->
+<div class="mt-3 bg-red-950/40 border border-red-800/40 rounded-lg p-2 flex items-center gap-2 text-[11px] text-red-300">
+<svg class="w-4 h-4 flex-shrink-0 text-red-400" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+<span>Operator Training Recommended: <strong>AMIRUN</strong> accounts for 76.5% of shift escalations.</span>
+</div>
+</div>
+<!-- Metric Scale Footer -->
+<div class="flex justify-between text-[10px] font-mono text-slate-500 border-t border-[#18233c] pt-2">
+<span>0</span>
+<span>5</span>
+<span>10</span>
+<span>15</span>
+<span>20</span>
+<span>25</span>
+<span>30</span>
+</div>
+</div>
+<!-- Chart 3: Shift-Wise Failures -->
+<div class="bg-[#0d1527] border border-[#1f2e4d] rounded-2xl p-5 flex flex-col justify-between shadow-card-elevated">
+<!-- Header & Toggles -->
+<div class="flex items-center justify-between pb-3 border-b border-[#18233c]">
+<div class="flex items-center gap-2">
+<span class="text-base">⏰</span>
+<h3 class="font-bold text-sm text-white tracking-wide">Shift-Wise Failures</h3>
+</div>
+<div class="flex items-center bg-[#070b14] p-1 rounded-lg border border-[#1e2a44] text-[11px]">
+<button class="chart-toggle-btn px-2.5 py-1 rounded inactive flex items-center gap-1 hover:text-white">
+<span>🍩 Donut</span>
+</button>
+<button class="chart-toggle-btn px-2.5 py-1 rounded active flex items-center gap-1">
+<span>📊 Bar</span>
+</button>
+</div>
+</div>
+<!-- Shift Breakdown Bars -->
+<div class="py-4 space-y-4">
+<!-- Shift A -->
+<div class="space-y-1.5">
+<div class="flex justify-between text-xs font-mono">
+<span class="text-slate-300 font-medium">Shift A</span>
+<span class="text-red-400 font-bold">2 (5.9%)</span>
+</div>
+<div class="h-6 w-full bg-[#121c31] rounded-md overflow-hidden p-0.5 border border-[#1d2d4c]">
+<div class="h-full bg-red-500 rounded" style="width: 5.7%;"></div>
+</div>
+</div>
+<!-- Shift B -->
+<div class="space-y-1.5">
+<div class="flex justify-between text-xs font-mono">
+<span class="text-cyan-300 font-semibold">Shift B (Active)</span>
+<span class="text-cyan-400 font-bold">32 (94.1%)</span>
+</div>
+<div class="h-6 w-full bg-[#121c31] rounded-md overflow-hidden p-0.5 border border-[#1d2d4c]">
+<div class="h-full bg-gradient-to-r from-cyan-400 to-cyan-300 rounded shadow-glow-cyan-sm" style="width: 91.4%;"></div>
+</div>
+</div>
+<!-- Shift C -->
+<div class="space-y-1.5">
+<div class="flex justify-between text-xs font-mono">
+<span class="text-slate-500 font-medium">Shift C</span>
+<span class="text-slate-500 font-bold">0 (0.0%)</span>
+</div>
+<div class="h-6 w-full bg-[#121c31] rounded-md overflow-hidden p-0.5 border border-[#1d2d4c]">
+<div class="h-full bg-slate-700 rounded" style="width: 0%;"></div>
+</div>
+</div>
+</div>
+<!-- Metric Scale Footer -->
+<div class="flex justify-between text-[10px] font-mono text-slate-500 border-t border-[#18233c] pt-2">
+<span>0</span>
+<span>5</span>
+<span>10</span>
+<span>15</span>
+<span>20</span>
+<span>25</span>
+<span>30</span>
+<span>35</span>
+</div>
+</div>
+</section>
+<!-- END: PrimaryChartsSection -->
+<!-- BEGIN: SecondaryChartsSection -->
+<section class="grid grid-cols-1 lg:grid-cols-12 gap-4" data-purpose="trend-and-pid-details">
+<!-- Chart 4: Maximum Failed PIDs & Root Causes (5 Cols) -->
+<div class="lg:col-span-5 bg-[#0d1527] border border-[#1f2e4d] rounded-2xl p-5 flex flex-col justify-between shadow-card-elevated">
+<!-- Header -->
+<div class="flex items-center justify-between pb-3 border-b border-[#18233c]">
+<div class="flex items-center gap-2">
+<span class="text-base">🏷️</span>
+<h3 class="font-bold text-sm text-white tracking-wide">Maximum Failed PIDs &amp; Causes</h3>
+</div>
+<div class="flex items-center gap-2">
+<div class="bg-[#121e36] text-[11px] font-mono px-2 py-1 rounded border border-[#223559] text-cyan-300 flex items-center gap-1 cursor-pointer">
+<span>All PIDs</span>
+<svg class="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M19 9l-7 7-7-7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+</div>
+<div class="flex items-center bg-[#070b14] p-1 rounded-lg border border-[#1e2a44] text-[11px]">
+<button class="chart-toggle-btn px-2 py-0.5 rounded active">📊 Bar</button>
+</div>
+</div>
+</div>
+<!-- PID Breakdown List -->
+<div class="py-3 space-y-2.5 font-mono text-xs">
+<!-- PID 222134 -->
+<div class="space-y-1">
+<div class="flex justify-between items-center text-slate-300">
+<span class="font-semibold text-white">PID: 222134</span>
+<span class="text-[10px] bg-red-950 text-red-300 px-1.5 py-0.5 rounded">WRONG PICKING</span>
+<span class="text-red-400 font-bold">4.0</span>
+</div>
+<div class="h-4 bg-[#121c31] rounded p-0.5 border border-[#1d2d4c]">
+<div class="h-full bg-red-500 rounded" style="width: 100%;"></div>
+</div>
+</div>
+<!-- PID 243201 -->
+<div class="space-y-1">
+<div class="flex justify-between items-center text-slate-300">
+<span class="font-semibold text-white">PID: 243201</span>
+<span class="text-[10px] bg-cyan-950 text-cyan-300 px-1.5 py-0.5 rounded">UNASSIGNED</span>
+<span class="text-cyan-400 font-bold">4.0</span>
+</div>
+<div class="h-4 bg-[#121c31] rounded p-0.5 border border-[#1d2d4c]">
+<div class="h-full bg-cyan-400 rounded" style="width: 100%;"></div>
+</div>
+</div>
+<!-- PID 224422 -->
+<div class="space-y-1">
+<div class="flex justify-between items-center text-slate-300">
+<span class="font-semibold text-white">PID: 224422</span>
+<span class="text-[10px] bg-amber-950 text-amber-300 px-1.5 py-0.5 rounded">POWER ADD / AP</span>
+<span class="text-amber-400 font-bold">2.0</span>
+</div>
+<div class="h-4 bg-[#121c31] rounded p-0.5 border border-[#1d2d4c]">
+<div class="h-full bg-amber-400 rounded" style="width: 50%;"></div>
+</div>
+</div>
+<!-- PID 242233 -->
+<div class="space-y-1">
+<div class="flex justify-between items-center text-slate-300">
+<span class="font-semibold text-white">PID: 242233</span>
+<span class="text-[10px] bg-purple-950 text-purple-300 px-1.5 py-0.5 rounded">ALIGNMENT</span>
+<span class="text-purple-400 font-bold">2.0</span>
+</div>
+<div class="h-4 bg-[#121c31] rounded p-0.5 border border-[#1d2d4c]">
+<div class="h-full bg-purple-500 rounded" style="width: 50%;"></div>
+</div>
+</div>
+<!-- PID 201621 -->
+<div class="space-y-1">
+<div class="flex justify-between items-center text-slate-300">
+<span class="font-semibold text-white">PID: 201621</span>
+<span class="text-[10px] bg-indigo-950 text-indigo-300 px-1.5 py-0.5 rounded">POWER ADD</span>
+<span class="text-indigo-400 font-bold">2.0</span>
+</div>
+<div class="h-4 bg-[#121c31] rounded p-0.5 border border-[#1d2d4c]">
+<div class="h-full bg-indigo-400 rounded" style="width: 50%;"></div>
+</div>
+</div>
+<!-- PID 236097 -->
+<div class="space-y-1">
+<div class="flex justify-between items-center text-slate-300">
+<span class="font-semibold text-white">PID: 236097</span>
+<span class="text-[10px] bg-pink-950 text-pink-300 px-1.5 py-0.5 rounded">COATING SCRATCH</span>
+<span class="text-pink-400 font-bold">1.0</span>
+</div>
+<div class="h-4 bg-[#121c31] rounded p-0.5 border border-[#1d2d4c]">
+<div class="h-full bg-pink-500 rounded" style="width: 25%;"></div>
+</div>
+</div>
+<!-- PID 219027 -->
+<div class="space-y-1">
+<div class="flex justify-between items-center text-slate-300">
+<span class="font-semibold text-white">PID: 219027</span>
+<span class="text-[10px] bg-blue-950 text-blue-300 px-1.5 py-0.5 rounded">LABEL MISPRINT</span>
+<span class="text-blue-400 font-bold">1.0</span>
+</div>
+<div class="h-4 bg-[#121c31] rounded p-0.5 border border-[#1d2d4c]">
+<div class="h-full bg-blue-500 rounded" style="width: 25%;"></div>
+</div>
+</div>
+</div>
+<!-- X-Axis Labels -->
+<div class="flex justify-between text-[10px] font-mono text-slate-500 border-t border-[#18233c] pt-2">
+<span>0</span>
+<span>0.5</span>
+<span>1.0</span>
+<span>1.5</span>
+<span>2.0</span>
+<span>2.5</span>
+<span>3.0</span>
+<span>3.5</span>
+<span>4.0</span>
+</div>
+</div>
+<!-- Chart 5: Hourly Failure Trend (7 Cols) -->
+<div class="lg:col-span-7 bg-[#0d1527] border border-[#1f2e4d] rounded-2xl p-5 flex flex-col justify-between shadow-card-elevated">
+<!-- Trend Header -->
+<div class="flex flex-wrap items-center justify-between pb-3 border-b border-[#18233c] gap-2">
+<div class="flex items-center gap-2">
+<span class="text-base">⏳</span>
+<div>
+<h3 class="font-bold text-sm text-white tracking-wide">Hourly Failure Trend</h3>
+<p class="text-[11px] text-slate-400">Peak escalation concentrated at 19:00 hrs during Shift B handoff</p>
+</div>
+</div>
+<!-- Filters -->
+<div class="flex items-center gap-2">
+<div class="bg-[#121e36] text-[11px] font-mono px-2.5 py-1 rounded border border-[#223559] text-slate-200 flex items-center gap-1.5 cursor-pointer">
+<span>All Shifts</span>
+<svg class="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M19 9l-7 7-7-7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+</div>
+<div class="bg-[#121e36] text-[11px] font-mono px-2.5 py-1 rounded border border-[#223559] text-slate-200 flex items-center gap-1.5 cursor-pointer">
+<span>All Operators</span>
+<svg class="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M19 9l-7 7-7-7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+</div>
+</div>
+</div>
+<!-- SVG Line & Area Chart Container -->
+<div class="relative w-full h-[280px] my-2">
+<svg class="w-full h-full" preserveaspectratio="none" viewbox="0 0 900 280">
+<defs>
+<!-- Gradient for chart background fill -->
+<lineargradient id="cyanAreaGradient" x1="0" x2="0" y1="0" y2="1">
+<stop offset="0%" stop-color="#00f2fe" stop-opacity="0.35"></stop>
+<stop offset="60%" stop-color="#00f2fe" stop-opacity="0.08"></stop>
+<stop offset="100%" stop-color="#00f2fe" stop-opacity="0"></stop>
+</lineargradient>
+</defs>
+<!-- Horizontal Grid Lines (Y-Axis: 0 to 12) -->
+<!-- 12: y=25, 10: y=60, 8: y=95, 6: y=130, 4: y=165, 2: y=200, 0: y=235 -->
+<line class="chart-grid-line" x1="40" x2="880" y1="25" y2="25"></line>
+<text class="chart-tick-text" x="18" y="29">12</text>
+<line class="chart-grid-line" x1="40" x2="880" y1="60" y2="60"></line>
+<text class="chart-tick-text" x="18" y="64">10</text>
+<line class="chart-grid-line" x1="40" x2="880" y1="95" y2="95"></line>
+<text class="chart-tick-text" x="24" y="99">8</text>
+<line class="chart-grid-line" x1="40" x2="880" y1="130" y2="130"></line>
+<text class="chart-tick-text" x="24" y="134">6</text>
+<line class="chart-grid-line" x1="40" x2="880" y1="165" y2="165"></line>
+<text class="chart-tick-text" x="24" y="169">4</text>
+<line class="chart-grid-line" x1="40" x2="880" y1="200" y2="200"></line>
+<text class="chart-tick-text" x="24" y="204">2</text>
+<line stroke="#253759" stroke-width="1.5" x1="40" x2="880" y1="235" y2="235"></line>
+<text class="chart-tick-text" x="24" y="239">0</text>
+<!-- Area Path (Closed polygon) -->
+<polygon fill="url(#cyanAreaGradient)" points="
+              50,235 
+              85,235 
+              120,235 
+              155,235 
+              190,235 
+              225,235 
+              260,235 
+              295,235 
+              330,235 
+              365,235 
+              400,235 
+              435,235 
+              470,235 
+              505,235 
+              540,218 
+              575,218 
+              610,235 
+              645,218 
+              680,183 
+              715,25 
+              750,95 
+              785,112 
+              820,218 
+              855,235 
+              855,235 
+              50,235
+            "></polygon>
+<!-- Smooth Trend Line -->
+<path class="hourly-wave-glow" d="
+              M 50,235 
+              L 85,235 
+              L 120,235 
+              L 155,235 
+              L 190,235 
+              L 225,235 
+              L 260,235 
+              L 295,235 
+              L 330,235 
+              L 365,235 
+              L 400,235 
+              L 435,235 
+              L 470,235 
+              L 505,235 
+              C 525,235 530,218 540,218 
+              C 555,218 560,218 575,218 
+              C 590,218 595,235 610,235 
+              C 625,235 635,218 645,218 
+              C 660,218 670,183 680,183 
+              C 695,183 705,25 715,25 
+              C 728,25 738,95 750,95 
+              C 765,95 772,112 785,112 
+              C 802,112 812,218 820,218 
+              C 832,218 840,235 855,235
+            " fill="none" stroke="#00f2fe" stroke-linecap="round" stroke-width="3"></path>
+<!-- Interactive Plot Points -->
+<circle cx="50" cy="235" fill="#070b14" r="3.5" stroke="#00f2fe" stroke-width="2"></circle>
+<circle cx="85" cy="235" fill="#070b14" r="3.5" stroke="#00f2fe" stroke-width="2"></circle>
+<circle cx="120" cy="235" fill="#070b14" r="3.5" stroke="#00f2fe" stroke-width="2"></circle>
+<circle cx="155" cy="235" fill="#070b14" r="3.5" stroke="#00f2fe" stroke-width="2"></circle>
+<circle cx="190" cy="235" fill="#070b14" r="3.5" stroke="#00f2fe" stroke-width="2"></circle>
+<circle cx="225" cy="235" fill="#070b14" r="3.5" stroke="#00f2fe" stroke-width="2"></circle>
+<circle cx="260" cy="235" fill="#070b14" r="3.5" stroke="#00f2fe" stroke-width="2"></circle>
+<circle cx="295" cy="235" fill="#070b14" r="3.5" stroke="#00f2fe" stroke-width="2"></circle>
+<circle cx="330" cy="235" fill="#070b14" r="3.5" stroke="#00f2fe" stroke-width="2"></circle>
+<circle cx="365" cy="235" fill="#070b14" r="3.5" stroke="#00f2fe" stroke-width="2"></circle>
+<circle cx="400" cy="235" fill="#070b14" r="3.5" stroke="#00f2fe" stroke-width="2"></circle>
+<circle cx="435" cy="235" fill="#070b14" r="3.5" stroke="#00f2fe" stroke-width="2"></circle>
+<circle cx="470" cy="235" fill="#070b14" r="3.5" stroke="#00f2fe" stroke-width="2"></circle>
+<circle cx="505" cy="235" fill="#070b14" r="3.5" stroke="#00f2fe" stroke-width="2"></circle>
+<circle cx="540" cy="218" fill="#00f2fe" r="4" stroke="#fff" stroke-width="1.5"></circle>
+<circle cx="575" cy="218" fill="#00f2fe" r="4" stroke="#fff" stroke-width="1.5"></circle>
+<circle cx="610" cy="235" fill="#070b14" r="3.5" stroke="#00f2fe" stroke-width="2"></circle>
+<circle cx="645" cy="218" fill="#00f2fe" r="4" stroke="#fff" stroke-width="1.5"></circle>
+<circle cx="680" cy="183" fill="#00f2fe" r="4" stroke="#fff" stroke-width="1.5"></circle>
+<!-- PEAK SPIKE: 19:00 (Value: 12) -->
+<circle cx="715" cy="25" fill="#ff4b4b" r="6" stroke="#ffffff" stroke-width="2"></circle>
+<circle class="animate-ping" cx="715" cy="25" fill="none" opacity="0.75" r="11" stroke="#ff4b4b" stroke-width="1.5"></circle>
+<circle cx="750" cy="95" fill="#00f2fe" r="4" stroke="#fff" stroke-width="1.5"></circle>
+<circle cx="785" cy="112" fill="#00f2fe" r="4" stroke="#fff" stroke-width="1.5"></circle>
+<circle cx="820" cy="218" fill="#00f2fe" r="4" stroke="#fff" stroke-width="1.5"></circle>
+<circle cx="855" cy="235" fill="#070b14" r="3.5" stroke="#00f2fe" stroke-width="2"></circle>
+<!-- Peak Callout Annotation -->
+<g transform="translate(640, 15)">
+<rect fill="#1e1b4b" height="24" rx="4" stroke="#a855f7" stroke-width="1" width="85"></rect>
+<text fill="#e9d5ff" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="bold" x="6" y="16">Peak: 12 @ 19h</text>
+</g>
+<!-- X-Axis Hours Labels (00:00 to 23:00) -->
+<text class="chart-tick-text" x="38" y="260">00:00</text>
+<text class="chart-tick-text" x="73" y="260">01:00</text>
+<text class="chart-tick-text" x="108" y="260">02:00</text>
+<text class="chart-tick-text" x="143" y="260">03:00</text>
+<text class="chart-tick-text" x="178" y="260">04:00</text>
+<text class="chart-tick-text" x="213" y="260">05:00</text>
+<text class="chart-tick-text" x="248" y="260">06:00</text>
+<text class="chart-tick-text" x="283" y="260">07:00</text>
+<text class="chart-tick-text" x="318" y="260">08:00</text>
+<text class="chart-tick-text" x="353" y="260">09:00</text>
+<text class="chart-tick-text" x="388" y="260">10:00</text>
+<text class="chart-tick-text" x="423" y="260">11:00</text>
+<text class="chart-tick-text" x="458" y="260">12:00</text>
+<text class="chart-tick-text" x="493" y="260">13:00</text>
+<text class="chart-tick-text" x="528" y="260">14:00</text>
+<text class="chart-tick-text" x="563" y="260">15:00</text>
+<text class="chart-tick-text" x="598" y="260">16:00</text>
+<text class="chart-tick-text" x="633" y="260">17:00</text>
+<text class="chart-tick-text" x="668" y="260">18:00</text>
+<text class="chart-tick-text" fill="#ff4b4b" font-weight="bold" x="703" y="260">19:00</text>
+<text class="chart-tick-text" x="738" y="260">20:00</text>
+<text class="chart-tick-text" x="773" y="260">21:00</text>
+<text class="chart-tick-text" x="808" y="260">22:00</text>
+<text class="chart-tick-text" x="843" y="260">23:00</text>
+</svg>
+</div>
+<!-- Hourly Trend Highlights Bar -->
+<div class="border-t border-[#18233c] pt-2.5 flex flex-wrap items-center justify-between text-xs text-slate-400">
+<div class="flex items-center gap-4">
+<div class="flex items-center gap-1.5">
+<span class="w-2.5 h-2.5 rounded-full bg-cyan-400"></span>
+<span>Hourly Incident Trace</span>
+</div>
+<div class="flex items-center gap-1.5">
+<span class="w-2.5 h-2.5 rounded-full bg-red-400"></span>
+<span>Critical Shift Outlier (19:00 - 21:00)</span>
+</div>
+</div>
+<div class="font-mono text-cyan-300 text-[11px]">
+            Mean Failures/Hour: 1.41
+          </div>
+</div>
+</div>
+</section>
+<!-- END: SecondaryChartsSection -->
+</main>
+<!-- BEGIN: MainFooter -->
+<footer class="max-w-[1920px] mx-auto px-4 sm:px-6 py-4 mt-6 border-t border-[#1a263e] flex flex-col sm:flex-row items-center justify-between text-xs text-slate-500 gap-2">
+<div class="flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-cyan-500"></span>
+<span>MEI E2 Factory Quality &amp; Escalation Analytics Engine v4.8.2</span>
+</div>
+<div class="font-mono text-[11px] text-slate-400">
+      Last Synced: <span class="text-cyan-300">04-09-2026 15:06:42 IST</span> | Host: <span class="text-slate-300">127.0.0.1:5000</span>
+</div>
+</footer>
+<!-- END: MainFooter -->
+</body></html>

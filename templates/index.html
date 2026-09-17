@@ -24,30 +24,26 @@
         </div>
         <div class="header-stats" style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap; flex-shrink: 0;">
             <!-- Shift Selector -->
-            <div class="header-select-group" style="display: flex; align-items: center; gap: 4px; background: rgba(255, 255, 255, 0.05); padding: 4px 8px; border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.1); white-space: nowrap;">
-                <label for="selShift" style="font-size: 0.72rem; color: var(--text-muted); font-weight: 700;">SHIFT:</label>
-                <select id="selShift" class="input-control" style="padding: 2px 6px; font-size: 0.78rem; height: auto; min-width: 80px; background: transparent; border: none; color: #fff;">
-                    <option value="Shift A" style="background: #111827;">Shift A</option>
-                    <option value="Shift B" style="background: #111827;">Shift B</option>
-                    <option value="Shift C" style="background: #111827;">Shift C</option>
+            <div class="header-select-group" style="display: flex; align-items: center; gap: 6px; white-space: nowrap;">
+                <label for="selShift" style="font-size: 0.75rem; color: var(--text-muted); font-weight: 700;">SHIFT:</label>
+                <select id="selShift">
+                    <option value="Shift A">Shift A</option>
+                    <option value="Shift B">Shift B</option>
+                    <option value="Shift C">Shift C</option>
                 </select>
             </div>
 
             <!-- Shift IC Selector + Gear Button -->
-            <div class="header-select-group" style="display: flex; align-items: center; gap: 4px; background: rgba(255, 255, 255, 0.05); padding: 4px 8px; border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.1); white-space: nowrap;">
-                <label for="selShiftIc" style="font-size: 0.72rem; color: var(--text-muted); font-weight: 700;">SHIFT IC:</label>
-                <select id="selShiftIc" class="input-control" style="padding: 2px 6px; font-size: 0.78rem; height: auto; min-width: 100px; background: transparent; border: none; color: #fff;" required>
-                    <!-- Rendered dynamically by JS -->
-                </select>
+            <div class="header-select-group" style="display: flex; align-items: center; gap: 6px; white-space: nowrap;">
+                <label for="selShiftIc" style="font-size: 0.75rem; color: var(--text-muted); font-weight: 700;">SHIFT IC:</label>
+                <select id="selShiftIc" required></select>
                 <button type="button" class="btn-manage-icon" onclick="openOptionsModal('shift_ic', 'SHIFT IC (SUPERVISOR)')" title="Edit/Add Options" style="font-size: 0.8rem; padding: 1px 3px; border: none; background: transparent; cursor: pointer;">⚙️</button>
             </div>
 
             <!-- E2 Operator Selector + Gear Button -->
-            <div class="header-select-group" style="display: flex; align-items: center; gap: 4px; background: rgba(255, 255, 255, 0.05); padding: 4px 8px; border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.1); white-space: nowrap;">
-                <label for="selOperator" style="font-size: 0.72rem; color: var(--text-muted); font-weight: 700;">OPERATOR:</label>
-                <select id="selOperator" class="input-control" style="padding: 2px 6px; font-size: 0.78rem; height: auto; min-width: 95px; background: transparent; border: none; color: #fff;" required>
-                    <!-- Rendered dynamically by JS -->
-                </select>
+            <div class="header-select-group" style="display: flex; align-items: center; gap: 6px; white-space: nowrap;">
+                <label for="selOperator" style="font-size: 0.75rem; color: var(--text-muted); font-weight: 700;">OPERATOR:</label>
+                <select id="selOperator" required></select>
                 <button type="button" class="btn-manage-icon" onclick="openOptionsModal('operator', 'E2 OPERATOR')" title="Edit/Add Options" style="font-size: 0.8rem; padding: 1px 3px; border: none; background: transparent; cursor: pointer;">⚙️</button>
             </div>
 
@@ -117,7 +113,7 @@
                                 <button type="button" class="btn-manage-icon"
                                     onclick="openOptionsModal('status', 'STATUS')" title="Edit/Add Options">⚙️</button>
                             </div>
-                            <select id="selStatus" class="input-control" required>
+                            <select id="selStatus" class="input-control" onchange="onStatusChange()" required>
                                 <!-- Rendered dynamically by JS -->
                             </select>
                         </div>
@@ -134,7 +130,7 @@
                             <button type="button" class="btn-manage-icon"
                                 onclick="openOptionsModal('issue', 'PRIMARY ISSUE / CAUSE')" title="Edit/Add Options">⚙️</button>
                         </div>
-                        <select id="selIssue" class="input-control" onchange="onIssueChange()" required>
+                        <select id="selIssue" class="input-control" onchange="onIssueChange()">
                             <!-- Rendered dynamically by JS -->
                         </select>
                         <!-- Dynamic Custom Issue Input Box (Appears when OTHER is selected) -->

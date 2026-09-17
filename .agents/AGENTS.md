@@ -113,3 +113,6 @@ Before making ANY change, every agent session MUST confirm:
 - **Native Selects (`FAIL CATEGORY`, `STATUS`, `SHIFT IC`, `OPERATOR`)**: MUST NEVER display a disabled `"Select..."` placeholder option. Native select dropdowns MUST default directly to their first available option (`optionsList[0]`).
 - **Searchable Primary Cause Dropdown (`PRIMARY ISSUE / CAUSE`)**: This is the **ONLY** dropdown that uses TomSelect with live text filtering.
 - **Upward Dropup Placement**: The `PRIMARY ISSUE / CAUSE` TomSelect menu MUST open **upwards** (above the search input box). Its max-height is calculated dynamically (`rect.top - 20px`) so that the search text box remains **100% visible and unobstructed** for real-time typing.
+
+### Rule 20: Git Commit Frequency
+- **MANDATORY**: DO NOT execute `git commit` after every single file change or minor CSS tweak. Keep uncommitted edits in working tree until explicitly requested by the user or upon completing a major feature.

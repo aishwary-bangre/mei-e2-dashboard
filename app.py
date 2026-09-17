@@ -626,7 +626,7 @@ def api_lookup_tray(tray_id):
             'success': True,
             'tray_id': tray_id,
             'fitting_id': str(fitting_id),
-            'order_id': str(order_id or ''),
+            'order_id': order_id or '',
             'is_jit': is_jit_val,
             'processing_type': processing_type_val,
             'frame_pid': frame_pid,

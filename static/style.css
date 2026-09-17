@@ -833,26 +833,39 @@ tbody tr:hover {
     box-shadow: 0 0 10px var(--cyan-glow) !important;
 }
 
-/* Header Bar Compact TomSelect styling (Matches Screenshot 2: Dark Pill + Cyan Glow + Down Arrow) */
+/* Header Bar TomSelect Pill Styling (Picture 2 Pill + Dark Navy Popup) */
 .header-select-group .ts-wrapper {
     display: inline-block !important;
     width: auto !important;
 }
 .header-select-group .ts-control {
-    padding: 3px 28px 3px 12px !important;
-    font-size: 0.8rem !important;
+    position: relative !important;
+    padding: 3px 26px 3px 10px !important;
+    font-size: 0.78rem !important;
     font-weight: 600 !important;
     min-height: 0 !important;
-    height: auto !important;
-    line-height: 1.3 !important;
-    background: #0F172A url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23FFFFFF' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E") no-repeat right 8px center !important;
+    height: 26px !important;
+    line-height: 20px !important;
+    background-color: rgba(15, 23, 42, 0.85) !important;
     border: 1px solid rgba(0, 242, 254, 0.3) !important;
     border-radius: 12px !important;
     color: #FFFFFF !important;
     box-shadow: 0 0 8px rgba(0, 242, 254, 0.15) !important;
+    text-align: left !important;
+    cursor: pointer !important;
 }
 .header-select-group .ts-wrapper.single .ts-control::after {
-    display: none !important;
+    display: block !important;
+    content: '' !important;
+    position: absolute !important;
+    right: 9px !important;
+    top: 50% !important;
+    margin-top: -2px !important;
+    width: 0 !important;
+    height: 0 !important;
+    border-style: solid !important;
+    border-width: 5px 4px 0 4px !important;
+    border-color: #FFFFFF transparent transparent transparent !important;
 }
 .ts-control input {
     color: var(--text-main) !important;
