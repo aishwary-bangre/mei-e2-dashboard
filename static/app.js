@@ -47,7 +47,7 @@ async function checkHealth() {
         } else {
             if (dbPill) {
                 dbPill.className = 'stat-pill badge-offline';
-                dbPill.innerHTML = '🔴 Port 13306 Offline';
+                dbPill.innerHTML = `🔴 Port ${data.port || 31678} Offline`;
             }
             if (cardBadge && !cardBadge.textContent.includes('Fetched') && !cardBadge.textContent.includes('Cached')) {
                 cardBadge.className = 'badge-status badge-ng';
@@ -1520,7 +1520,7 @@ async function submitAdaptivePassword() {
     }
 
     if (msg) {
-        msg.textContent = '⏳ Testing password against port 13306...';
+        msg.textContent = '⏳ Testing password against port 31678...';
         msg.style.color = 'var(--cyan-accent)';
     }
 

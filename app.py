@@ -113,7 +113,7 @@ CACHE_TTL = 600  # 10 minutes cache TTL
 # -----------------------------------------------------------------------------
 # 1. FAST ADAPTIVE ACCESS & PERSISTENT MYSQL CONNECTION MANAGEMENT
 # -----------------------------------------------------------------------------
-def is_port_open(host='127.0.0.1', port=13306, timeout=0.5):
+def is_port_open(host='127.0.0.1', port=31678, timeout=0.5):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
     try:
@@ -123,6 +123,9 @@ def is_port_open(host='127.0.0.1', port=13306, timeout=0.5):
         return False
     finally:
         s.close()
+
+
+        
 
 
 def _read_adaptive_stdout(proc):
@@ -188,7 +191,7 @@ def get_latest_adaptive_creds():
 
     CACHED_CREDS = {
         'host': '127.0.0.1',
-        'port': 13306,
+        'port': 31678,
         'user': 'aishwary_bangre',
         'password': pwd,
         'database': 'wms',
@@ -209,7 +212,7 @@ def get_fresh_db_connection():
     global DYNAMIC_PASSWORD, CACHED_CREDS, GLOBAL_DB_CONN
     with DB_LOCK:
         if not is_port_open():
-            raise Exception("Database proxy port 13306 is closed. Please start 'adaptive connect' in your terminal.")
+            raise Exception("Database proxy port 31678 is closed. Please start 'adaptive connect' in your terminal.")
 
         if not DYNAMIC_PASSWORD:
             saved_pwd = load_saved_password()
@@ -297,7 +300,7 @@ def health_check():
     return jsonify({
         'status': 'online' if connected else 'offline',
         'db': 'MySQL (wms)',
-        'port': 13306,
+        'port': 31678,
         'shift': get_current_shift(),
         'server_time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     })
@@ -305,7 +308,7 @@ def health_check():
 
 @app.route('/api/config/password', methods=['POST'])
 def set_password_endpoint():
-    """Sets and immediately verifies the active terminal session password against port 13306."""
+    """Sets and immediately verifies the active terminal session password against port 31678."""
     global DYNAMIC_PASSWORD, CACHED_CREDS, PERSISTENT_CONN
     data = request.json or {}
     pwd = str(data.get('password', '')).strip()
@@ -314,11 +317,11 @@ def set_password_endpoint():
         return jsonify({'success': False, 'error': 'Password cannot be empty.'}), 400
 
     if not is_port_open():
-        return jsonify({'success': False, 'error': "Database proxy port 13306 is closed. Please start 'adaptive connect' in your terminal."}), 400
+        return jsonify({'success': False, 'error': "Database proxy port 31678 is closed. Please start 'adaptive connect' in your terminal."}), 400
 
     test_creds = {
         'host': '127.0.0.1',
-        'port': 13306,
+        'port': 31678,
         'user': 'aishwary_bangre',
         'password': pwd,
         'database': 'wms',
@@ -1463,7 +1466,7 @@ if __name__ == '__main__':
     print("\n" + "=" * 80)
     print(" 🚀 MEI E2 ANALYTICS & ESCALATION LOGGING DASHBOARD BACKEND")
     print("=" * 80)
-    print("  -> Live MySQL Socket: 127.0.0.1:13306 (wms database)")
+    print("  -> Live MySQL Socket: 127.0.0.1:31678 (wms database)")
     print("  -> Web Dashboard: http://127.0.0.1:5000")
     print("=" * 80 + "\n")
     app.run(host='0.0.0.0', port=5000, debug=True)
