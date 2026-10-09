@@ -5,3 +5,6 @@ dropdown_options.json
 import_meta.json
 adaptive_session.json
 venv/
+.DS_Store
+__MACOSX/
+test.cpp

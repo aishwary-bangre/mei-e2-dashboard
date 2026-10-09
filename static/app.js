@@ -971,14 +971,16 @@ async function uploadImportExcel(inputElem) {
 }
 
 function triggerExport(format) {
-    const start = document.getElementById('dtFilterStart')?.value || '';
-    const end = document.getElementById('dtFilterEnd')?.value || '';
+    const start = document.getElementById('dtFilterStart')?.value || document.getElementById('analyticsStart')?.value || '';
+    const end = document.getElementById('dtFilterEnd')?.value || document.getElementById('analyticsEnd')?.value || '';
     const search = document.getElementById('txtSearchTable')?.value || '';
+    const shift = document.getElementById('selShift')?.value || '';
 
     const params = new URLSearchParams();
     if (start) params.append('start_time', start);
     if (end) params.append('end_time', end);
     if (search) params.append('search', search);
+    if (shift) params.append('shift', shift);
 
     window.location.href = `/api/export/${format}?${params.toString()}`;
 }

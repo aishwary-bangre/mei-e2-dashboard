@@ -256,7 +256,10 @@
         <div class="glass-card">
             <div class="card-header">
                 <h2>📋 Active Escalation Log Records</h2>
-                <div style="display: flex; gap: 10px; align-items: center;">
+                <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                    <button type="button" onclick="triggerExport('shift_production_report')" class="btn-export-shift" title="Export Shift Production Report formatted matching shop-floor template">
+                        📑 SHIFT PRODUCTION REPORT
+                    </button>
                     <button type="button" onclick="triggerExport('excel')" class="btn-export-excel" style="cursor: pointer; border: none;">
                         📥 EXPORT AS .XLSX
                     </button>

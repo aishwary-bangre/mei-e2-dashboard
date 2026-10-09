@@ -12,7 +12,7 @@ from flask_cors import CORS
 import pymysql  # type: ignore
 import pymysql.cursors  # type: ignore
 import openpyxl
-from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 ADAPTIVE_EXE = r"C:\Users\aishwary.bangre\adaptive.exe"
 LOCAL_DB_FILE = os.path.join(os.path.dirname(__file__), "wms_e2_escalations.json")
@@ -974,9 +974,12 @@ def export_excel():
     records = filter_escalation_records(load_local_escalations())
 
     wb = openpyxl.Workbook()
-    ws = wb.active
+    ws_shift_rep = wb.active
+    assert ws_shift_rep is not None
+    build_shift_production_sheet(ws_shift_rep, records, shift_label=request.args.get('shift'))
+
+    ws = wb.create_sheet(title="E2 Escalation")
     assert ws is not None
-    ws.title = "E2 Escalation"
 
     headers = [
         "Date", "TIME", "SHIFT", "SHIFT IC", "E2 OP", "TRAY ID", "FITTING ID",
@@ -1144,6 +1147,205 @@ def export_excel():
     output.seek(0)
 
     filename = f"E2_Escalations_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return send_file(
+        output,
+        download_name=filename,
+        as_attachment=True,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+
+def build_shift_production_sheet(ws, records, shift_label=None, date_label=None):
+    """Generates the Shift Production Report summary sheet matching the shop-floor production layout."""
+    ws.title = "Shift Production Report"
+
+    # Resolve Shift & Date
+    if not shift_label:
+        shift_label = records[0].get('shift', 'Shift B') if records else 'Shift B'
+    clean_shift = shift_label.upper().replace('SHIFT ', 'SHIFT- ')
+    if not clean_shift.startswith('SHIFT'):
+        clean_shift = f"SHIFT- {clean_shift}"
+
+    if not date_label:
+        dates = [r.get('entry_date') for r in records if r.get('entry_date')]
+        date_label = dates[0] if dates else datetime.datetime.now().strftime('%d/%m/%Y')
+
+    # Shift IC and Operators
+    shift_ics = [r.get('shift_ic') for r in records if r.get('shift_ic')]
+    shift_incharge = max(set(shift_ics), key=shift_ics.count) if shift_ics else "YUVRAJ"
+
+    ops = list(dict.fromkeys(str(r.get('operator', '')).strip().upper() for r in records if r.get('operator') and str(r.get('operator')).strip().upper() != 'UNASSIGNED'))
+    operators_str = "/".join(ops) if ops else "--"
+
+    # Aggregations
+    total_escalations = len(records)
+    return_to_lab = sum(1 for r in records if 'LAB' in str(r.get('status', '')).upper() or 'LAB' in str(r.get('issue', '')).upper())
+    asrs_return = sum(1 for r in records if 'ASRS' in str(r.get('status', '')).upper())
+    ng_count = sum(1 for r in records if str(r.get('status', '')).strip().upper() == 'NG')
+    ok_count = sum(1 for r in records if str(r.get('status', '')).strip().upper() == 'OK')
+
+    jit_count = sum(1 for r in records if str(r.get('is_jit', '')).strip().upper() in ('AUTO', 'MANUAL', 'YES', 'JIT'))
+    qc_count = sum(1 for r in records if 'QC' in str(r.get('issue', '')).upper() or 'QC' in str(r.get('status', '')).upper())
+    npicking_count = sum(1 for r in records if 'PICK' in str(r.get('issue', '')).upper())
+
+    # Issue Breakdown
+    issue_counts = {}
+    for r in records:
+        iss = str(r.get('issue', 'OTHER') or 'OTHER').strip()
+        issue_counts[iss] = issue_counts.get(iss, 0) + 1
+    sorted_issues = sorted(issue_counts.items(), key=lambda x: x[1], reverse=True)
+
+    # Styles & Colors
+    border_thin = Border(left=Side(style='thin', color='A6A6A6'), right=Side(style='thin', color='A6A6A6'),
+                         top=Side(style='thin', color='A6A6A6'), bottom=Side(style='thin', color='A6A6A6'))
+    font_bold = Font(name="Calibri", size=10, bold=True)
+    font_bold_white = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+    font_regular = Font(name="Calibri", size=10)
+    align_center = Alignment(horizontal="center", vertical="center")
+    align_left = Alignment(horizontal="left", vertical="center")
+
+    fills = {
+        'banner': PatternFill(start_color="FCE4D6", fill_type="solid"),
+        'green': PatternFill(start_color="A9D08E", fill_type="solid"),
+        'blue': PatternFill(start_color="D9E1F2", fill_type="solid"),
+        'amber': PatternFill(start_color="F4B084", fill_type="solid"),
+        'yellow': PatternFill(start_color="FFFF00", fill_type="solid"),
+        'red': PatternFill(start_color="FF0000", fill_type="solid"),
+        'ok': PatternFill(start_color="00B050", fill_type="solid"),
+        'total': PatternFill(start_color="00B0F0", fill_type="solid"),
+        'peach': PatternFill(start_color="FCE4D6", fill_type="solid"),
+        'gray': PatternFill(start_color="F2F2F2", fill_type="solid")
+    }
+
+    # Row 1: Header Banner
+    ws.merge_cells("A1:D1")
+    ws["A1"] = f"ESCALATION -2 ({clean_shift}) PRODUCTION REPORT ({date_label})"
+    ws["A1"].font = Font(name="Calibri", size=11, bold=True)
+    ws["A1"].fill = fills['banner']
+    ws["A1"].alignment = align_center
+
+    # Row 2: Sub-headers
+    ws["A2"], ws["B2"], ws["C2"], ws["D2"] = "SHIFT INCHARGE", shift_incharge.upper(), "E2-OPERATOR", operators_str
+    for col in ("A2", "B2", "C2", "D2"):
+        ws[col].fill = fills['green']
+        ws[col].font = font_bold
+        ws[col].alignment = align_center
+
+    # Left Section Rows (Row 3 to 18)
+    left_data = [
+        (3, "TOTAL PRODUCTION", None, 'blue', font_bold, False),
+        (4, "TOTAL ESCALATION ORDER", total_escalations, 'blue', font_bold, False),
+        (5, "% ORDER COUNT", '=IF(AND(ISNUMBER(B3),B3>0),B4/B3,"")', 'blue', font_bold, False),
+        (6, "TOTAL MACHINE USED =", None, 'amber', font_bold, True),
+        (7, "TOTAL MACHINE HANDOVER =", None, 'amber', font_bold, True),
+        (8, "TOTAL MANPOWER=", None, 'amber', font_bold, True),
+        (9, "PRODUCTION =", None, 'amber', font_bold, True),
+        (10, "MAINTENANCE =", None, 'amber', font_bold, True),
+        (11, "ESCALATION =", None, 'amber', font_bold, True),
+        (12, "Return To Lens Lab", return_to_lab, 'gray', font_regular, False),
+        (13, "ASRS RETURN", asrs_return, 'gray', font_regular, False),
+        (14, "NG", ng_count, 'red', font_bold_white, False),
+        (15, "OK", ok_count, 'ok', font_bold_white, False),
+        (16, "Grand Total", '=SUM(B12:B15)', 'total', font_bold_white, False),
+        (17, f"JIT={jit_count} QC={qc_count} NPICKING={npicking_count}", None, 'peach', font_bold, True),
+        (18, "PENDENCY=0", None, 'peach', font_bold, True),
+    ]
+
+    for row_idx, label, val, fill_key, font, is_merged in left_data:
+        if is_merged:
+            ws.merge_cells(f"A{row_idx}:B{row_idx}")
+            ws[f"A{row_idx}"] = label
+            ws[f"A{row_idx}"].fill = fills[fill_key]
+            ws[f"A{row_idx}"].font = font
+            ws[f"A{row_idx}"].alignment = align_center
+        else:
+            ws[f"A{row_idx}"] = label
+            ws[f"B{row_idx}"] = val
+            ws[f"A{row_idx}"].fill = fills[fill_key]
+            ws[f"A{row_idx}"].font = font
+            ws[f"A{row_idx}"].alignment = align_center
+            if fill_key in ('red', 'ok', 'total'):
+                ws[f"B{row_idx}"].fill = fills[fill_key]
+                ws[f"B{row_idx}"].font = font
+            else:
+                ws[f"B{row_idx}"].font = font_bold
+            ws[f"B{row_idx}"].alignment = align_center
+            if row_idx == 5:
+                ws[f"B{row_idx}"].number_format = '0.00%'
+
+    # Right Section: Issues Breakdown (Row 3 onwards)
+    top_issue_1 = sorted_issues[0][0] if len(sorted_issues) > 0 else None
+    top_issue_2 = sorted_issues[1][0] if len(sorted_issues) > 1 else None
+
+    for i in range(max(len(sorted_issues), 15)):
+        r_idx = 3 + i
+        if i < len(sorted_issues):
+            iss_name, iss_cnt = sorted_issues[i]
+            ws[f"C{r_idx}"] = iss_name
+            ws[f"D{r_idx}"] = iss_cnt
+            if iss_name == top_issue_1:
+                ws[f"C{r_idx}"].fill = fills['yellow']
+                ws[f"D{r_idx}"].fill = fills['yellow']
+                ws[f"C{r_idx}"].font = font_bold
+                ws[f"D{r_idx}"].font = font_bold
+            elif iss_name == top_issue_2:
+                ws[f"C{r_idx}"].fill = fills['amber']
+                ws[f"D{r_idx}"].fill = fills['amber']
+                ws[f"C{r_idx}"].font = font_bold
+                ws[f"D{r_idx}"].font = font_bold
+            else:
+                ws[f"C{r_idx}"].font = font_regular
+                ws[f"D{r_idx}"].font = font_regular
+        else:
+            ws[f"C{r_idx}"] = ""
+            ws[f"D{r_idx}"] = ""
+        ws[f"C{r_idx}"].alignment = align_left
+        ws[f"D{r_idx}"].alignment = align_center
+
+    # Right Table Footer: Grand Total
+    last_issue_row = max(len(sorted_issues) + 2, 17)
+    tot_row = max(last_issue_row + 1, 18)
+    ws[f"C{tot_row}"] = "Grand Total"
+    ws[f"D{tot_row}"] = f"=SUM(D3:D{last_issue_row})"
+    ws[f"C{tot_row}"].font = font_bold
+    ws[f"D{tot_row}"].font = font_bold
+    ws[f"C{tot_row}"].alignment = align_center
+    ws[f"D{tot_row}"].alignment = align_center
+
+    # Apply borders & dimensions across table
+    max_table_row = max(18, tot_row)
+    for row in range(1, max_table_row + 1):
+        ws.row_dimensions[row].height = 28 if row == 1 else 20
+        for col in ("A", "B", "C", "D"):
+            ws[f"{col}{row}"].border = border_thin
+
+    ws.column_dimensions['A'].width = 32
+    ws.column_dimensions['B'].width = 16
+    ws.column_dimensions['C'].width = 46
+    ws.column_dimensions['D'].width = 16
+
+
+@app.route('/api/export/shift_production_report', methods=['GET'])
+@app.route('/api/export/shift_report', methods=['GET'])
+def export_shift_production_report():
+    """Generates a dedicated Excel workbook with the exact Shift Production Report."""
+    records = filter_escalation_records(load_local_escalations())
+    shift_param = request.args.get('shift', '').strip()
+    if shift_param and records:
+        records = [r for r in records if r.get('shift') == shift_param]
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+
+    build_shift_production_sheet(ws, records, shift_label=shift_param)
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    shift_slug = (shift_param or 'Shift').replace(' ', '_')
+    filename = f"Shift_Production_Report_{shift_slug}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     return send_file(
         output,
         download_name=filename,
