@@ -83,5 +83,24 @@
     "circ_r1": null,
     "circ_l1": null,
     "notes": ""
+  },
+  {
+    "pid": "dwfaeva",
+    "pid_invoice": "dwfaeva",
+    "issue_raw": "Wrong shape cut by machine",
+    "done_by": "AMIRUN",
+    "shift_ic": "ADITI",
+    "timestamp": "2026-10-14 19:38:00",
+    "percentage_dev": null,
+    "a": null,
+    "b": null,
+    "circ_r": null,
+    "circ_l": null,
+    "a1": null,
+    "b1": null,
+    "circ_r1": null,
+    "circ_l1": null,
+    "notes": "",
+    "id": "82c2624a"
   }
 ]

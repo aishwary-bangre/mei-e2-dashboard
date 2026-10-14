@@ -572,32 +572,177 @@
         <!-- ==================================================== -->
         <div id="analytics-view" class="view-section">
 
-            <!-- Prominent PID Search Bar -->
-            <section class="search-hero glass-card" id="hero-search-section">
-                <div class="search-hero-inner">
-                    <div class="search-hero-icon">🔎</div>
-                    <select id="hero-search-type" class="form-input" style="width:auto; margin-right:8px; height: 100%;">
-                        <option value="pid">PID</option>
-                        <option value="invoice">Invoice</option>
-                    </select>
-                    <input type="text" id="hero-pid-search" placeholder="Enter value..." class="search-hero-input" />
-                    <button id="hero-pid-search-btn" class="btn btn-primary">Search</button>
-                    <button id="btn-log-correction-top" class="btn btn-success-outline">+ Log Correction</button>
+            <!-- ====================================================== -->
+            <!-- CONTROL STRIP: Data Sources, Date Filter, Exports       -->
+            <!-- ====================================================== -->
+            <section class="sc-control-strip glass-card" id="sc-control-strip">
+                <!-- Row 1: Period uploads + Import + Date filter -->
+                <div class="sc-ctrl-row sc-ctrl-row-top">
+                    <!-- Period A / B Drop zones (compact) -->
+                    <div class="sc-period-zones">
+                        <div class="sc-dropzone-compact" id="dropzone-period-a">
+                            <span class="sc-drop-icon">📁</span>
+                            <div class="sc-drop-text">
+                                <span class="sc-drop-label">Period A</span>
+                                <span class="sc-drop-status" id="lbl-period-a-status">Drop or click</span>
+                            </div>
+                            <input type="file" id="input-period-a" accept=".xlsx,.xls" hidden />
+                        </div>
+                        <span class="sc-period-arrow">→</span>
+                        <div class="sc-dropzone-compact" id="dropzone-period-b">
+                            <span class="sc-drop-icon">📁</span>
+                            <div class="sc-drop-text">
+                                <span class="sc-drop-label">Period B</span>
+                                <span class="sc-drop-status" id="lbl-period-b-status">Drop or click</span>
+                            </div>
+                            <input type="file" id="input-period-b" accept=".xlsx,.xls" hidden />
+                        </div>
+                    </div>
+
+                    <div class="sc-ctrl-divider"></div>
+
+                    <!-- Import Correction Sheet -->
+                    <div class="sc-import-zone">
+                        <button class="btn btn-accent-outline" id="btn-import-corrections">
+                            📥 Import Correction Sheet
+                        </button>
+                        <span class="sc-drop-status" id="lbl-import-status"></span>
+                        <input type="file" id="input-import-corrections" accept=".xlsx,.xls" hidden />
+                    </div>
+
+                    <div class="sc-ctrl-divider"></div>
+
+                    <!-- Date Range Filter -->
+                    <div class="sc-date-filter">
+                        <span class="sc-filter-label">📅 Filter QC Date</span>
+                        <input type="date" id="sc-date-from" class="sc-date-input" title="From date" />
+                        <span class="sc-date-sep">–</span>
+                        <input type="date" id="sc-date-to" class="sc-date-input" title="To date" />
+                        <button class="btn btn-primary btn-sm" id="btn-sc-date-apply">Apply</button>
+                        <button class="btn btn-secondary btn-sm" id="btn-sc-date-clear">Clear</button>
+                    </div>
+                </div>
+
+                <!-- Row 2: Period labels + Exports -->
+                <div class="sc-ctrl-row sc-ctrl-row-bottom">
+                    <div class="sc-period-labels">
+                        <span><span class="period-dot past"></span> Period A: <strong id="lbl-past-period">N/A</strong></span>
+                        <span class="sc-period-arrow">→</span>
+                        <span><span class="period-dot this"></span> Period B: <strong id="lbl-this-period">N/A</strong></span>
+                    </div>
+                    <div class="sc-exports">
+                        <span class="sc-filter-label">Export:</span>
+                        <a class="btn btn-export-sm" id="btn-sc-export-analysis" href="/api/shape/export_csv" download>
+                            📊 Analysis CSV
+                        </a>
+                        <a class="btn btn-export-sm" id="btn-sc-export-master" href="/api/shape/explorer/master/export?sort_order=asc" download>
+                            📋 Master DB
+                        </a>
+                        <button class="btn btn-export-sm" id="btn-sc-export-corrections-log">
+                            📄 Corrections Log
+                        </button>
+                    </div>
                 </div>
             </section>
 
-            <!-- Active Period Banner -->
-            <div class="period-banner glass-card">
-                <div class="period-item">
-                    <span class="period-dot past"></span>
-                    <span class="period-text">Period A: <strong id="lbl-past-period">N/A</strong></span>
+            <!-- ====================================================== -->
+            <!-- LOGGING STRIP: Always-visible inline correction form    -->
+            <!-- ====================================================== -->
+            <section class="sc-log-strip glass-card" id="sc-log-strip">
+                <div class="sc-log-header">
+                    <span class="sc-log-title">✏️ Log Shape Correction</span>
+                    <button class="sc-log-collapse-btn" id="btn-sc-log-collapse" title="Collapse form">▲</button>
                 </div>
-                <div class="period-arrow">➔</div>
-                <div class="period-item">
-                    <span class="period-dot this"></span>
-                    <span class="period-text">Period B: <strong id="lbl-this-period">N/A</strong></span>
+                <div class="sc-log-body" id="sc-log-body">
+                    <!-- Row 1: Main required fields -->
+                    <div class="sc-log-row">
+                        <div class="sc-log-field">
+                            <label class="sc-log-label">PID / Invoice <span class="req">*</span></label>
+                            <input type="text" id="sc-log-pid" class="sc-log-input" placeholder="e.g. 219754.INV123" />
+                        </div>
+                        <div class="sc-log-field sc-log-field-wide">
+                            <label class="sc-log-label">Issue / Reason <span class="req">*</span></label>
+                            <select id="sc-log-issue" class="sc-log-input">
+                                <option value="Wrong shape cut by machine">Wrong shape cut by machine</option>
+                                <option value="SMALL SIZE CUT BY MACHINE">Small size cut by machine</option>
+                                <option value="Lens Big Size issue">Lens big size issue</option>
+                                <option value="Lens slip by machine">Lens slip by machine</option>
+                                <option value="Out of shape - centration issue">Out of shape – centration issue</option>
+                                <option value="Rough cutting / bad cut">Rough cutting / bad cut</option>
+                                <option value="Wrong axis">Wrong axis</option>
+                                <option value="OTHER">Other (custom)</option>
+                            </select>
+                        </div>
+                        <div class="sc-log-field">
+                            <label class="sc-log-label">Shift IC</label>
+                            <select id="sc-log-shift-ic" class="sc-log-input" data-persist="sc_shift_ic">
+                                <option value="ADITI">ADITI</option>
+                                <option value="JANHVI">JANHVI</option>
+                                <option value="PRANJAL">PRANJAL</option>
+                                <option value="JATIN">JATIN</option>
+                                <option value="YUVRAJ">YUVRAJ</option>
+                            </select>
+                        </div>
+                        <div class="sc-log-field">
+                            <label class="sc-log-label">Operator</label>
+                            <select id="sc-log-operator" class="sc-log-input" data-persist="sc_operator">
+                                <option value="AMIRUN">AMIRUN</option>
+                                <option value="DHAVAL">DHAVAL</option>
+                                <option value="DIPANSHU">DIPANSHU</option>
+                                <option value="DEVENDRA">DEVENDRA</option>
+                                <option value="PRACHI">PRACHI</option>
+                                <option value="GITANJALI">GITANJALI</option>
+                                <option value="RAKESH">RAKESH</option>
+                                <option value="VIVEK">VIVEK</option>
+                            </select>
+                        </div>
+                        <div class="sc-log-field sc-log-field-ts">
+                            <label class="sc-log-label">Date &amp; Time</label>
+                            <input type="datetime-local" id="sc-log-timestamp" class="sc-log-input" />
+                        </div>
+                        <div class="sc-log-actions">
+                            <button class="btn btn-dim-toggle" id="btn-sc-dims-toggle">+ Dimensions</button>
+                            <button class="btn btn-primary sc-log-submit" id="btn-sc-log-submit">✓ Log Correction</button>
+                        </div>
+                    </div>
+
+                    <!-- Custom reason input (shown when OTHER selected) -->
+                    <div class="sc-log-row hidden" id="sc-log-custom-row">
+                        <div class="sc-log-field" style="flex:1">
+                            <label class="sc-log-label">Custom Reason</label>
+                            <input type="text" id="sc-log-issue-custom" class="sc-log-input" placeholder="Describe the issue..." />
+                        </div>
+                    </div>
+
+                    <!-- Row 2: Dimensions (collapsed by default) -->
+                    <div class="sc-log-dims hidden" id="sc-log-dims">
+                        <div class="sc-dims-section">
+                            <span class="sc-dims-label">Before</span>
+                            <div class="sc-dims-grid">
+                                <label>A <input type="number" step="0.01" id="sc-dim-a" class="sc-dim-input" placeholder="--" /></label>
+                                <label>B <input type="number" step="0.01" id="sc-dim-b" class="sc-dim-input" placeholder="--" /></label>
+                                <label>CR <input type="number" step="0.01" id="sc-dim-cr" class="sc-dim-input" placeholder="--" /></label>
+                                <label>CL <input type="number" step="0.01" id="sc-dim-cl" class="sc-dim-input" placeholder="--" /></label>
+                                <label>% Dev <input type="number" step="0.01" id="sc-dim-dev" class="sc-dim-input" placeholder="--" /></label>
+                            </div>
+                        </div>
+                        <span class="sc-dims-arrow">→</span>
+                        <div class="sc-dims-section">
+                            <span class="sc-dims-label">After</span>
+                            <div class="sc-dims-grid">
+                                <label>A1 <input type="number" step="0.01" id="sc-dim-a1" class="sc-dim-input" placeholder="--" /></label>
+                                <label>B1 <input type="number" step="0.01" id="sc-dim-b1" class="sc-dim-input" placeholder="--" /></label>
+                                <label>CR1 <input type="number" step="0.01" id="sc-dim-cr1" class="sc-dim-input" placeholder="--" /></label>
+                                <label>CL1 <input type="number" step="0.01" id="sc-dim-cl1" class="sc-dim-input" placeholder="--" /></label>
+                                <label>Notes <input type="text" id="sc-dim-notes" class="sc-dim-input" placeholder="optional" /></label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Submit feedback -->
+                    <div class="sc-log-feedback hidden" id="sc-log-feedback"></div>
                 </div>
-            </div>
+            </section>
 
             <!-- KPI Cards Grid (5 main cards) -->
             <section class="kpi-grid">
@@ -669,24 +814,7 @@
                 </div>
             </section>
 
-            <!-- Weekly Upload Section (collapsed) -->
-            <details class="glass-card upload-details">
-                <summary class="upload-summary">📁 Upload New QC Datasets (Period A / Period B)</summary>
-                <div class="dual-dropzones-grid">
-                    <div class="dropzone-box" id="dropzone-period-a">
-                        <div class="dropzone-icon">📁</div>
-                        <h3>Period A</h3>
-                        <p id="lbl-period-a-status">Drop or click to select Period A</p>
-                        <input type="file" id="input-period-a" accept=".xlsx, .xls" hidden />
-                    </div>
-                    <div class="dropzone-box" id="dropzone-period-b">
-                        <div class="dropzone-icon">📁</div>
-                        <h3>Period B</h3>
-                        <p id="lbl-period-b-status">Drop or click to select Period B</p>
-                        <input type="file" id="input-period-b" accept=".xlsx, .xls" hidden />
-                    </div>
-                </div>
-            </details>
+            <!-- Upload section removed: dropzones now live in the Control Strip above -->
 
         </div>
 
@@ -696,8 +824,7 @@
         <div id="impact-view" class="view-section hidden">
             <div id="impact-warnings" class="master-warnings hidden"></div>
             <div class="impact-toolbar">
-                <button class="btn btn-primary" id="btn-impact-log">＋ Log a correction</button>
-                <span class="chart-sub">Enter PID.Invoice, issue, dimensions before and after, and who did it. Everything below updates as soon as you save.</span>
+                <span class="chart-sub">Correction effectiveness analysis. Use the logging strip above the dashboard to log new corrections.</span>
             </div>
             <div class="master-summary-grid" id="impact-cards"></div>
 
@@ -1122,8 +1249,28 @@
                         <input type="text" id="manual-pid" required placeholder="e.g. 219754.INV123" class="form-input" />
                     </div>
                     <div class="form-group">
+                        <label for="manual-shift-ic">Shift IC</label>
+                        <select id="manual-shift-ic" class="form-input">
+                            <option value="ADITI">ADITI</option>
+                            <option value="JANHVI">JANHVI</option>
+                            <option value="PRANJAL">PRANJAL</option>
+                            <option value="JATIN">JATIN</option>
+                            <option value="YUVRAJ">YUVRAJ</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
                         <label for="manual-done-by">Person Involved</label>
-                        <input type="text" id="manual-done-by" placeholder="e.g. QC Lead" class="form-input" />
+                        <select id="manual-done-by" class="form-input">
+                            <option value="QC Lead">QC Lead</option>
+                            <option value="AMIRUN">AMIRUN</option>
+                            <option value="DHAVAL">DHAVAL</option>
+                            <option value="DIPANSHU">DIPANSHU</option>
+                            <option value="DEVENDRA">DEVENDRA</option>
+                            <option value="PRACHI">PRACHI</option>
+                            <option value="GITANJALI">GITANJALI</option>
+                            <option value="RAKESH">RAKESH</option>
+                            <option value="VIVEK">VIVEK</option>
+                        </select>
                     </div>
                     <div class="form-group">
                         <label for="manual-timestamp">Date</label>

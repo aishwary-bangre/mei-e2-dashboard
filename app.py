@@ -1672,7 +1672,17 @@ def export_csv():
 SHAPE_TEMP_DIR = tempfile.mkdtemp(prefix="mei_shape_")
 PROJEECT_BASE_DIR = os.path.join(os.path.dirname(__file__), "projeect copy 2")
 DEFAULT_PAST_PATH = os.path.join(PROJEECT_BASE_DIR, "QC Raw Data-2.xlsx")
+if not os.path.exists(DEFAULT_PAST_PATH):
+    alt_past = os.path.join(os.path.dirname(__file__), "data", "QC Raw Data-2.xlsx")
+    if os.path.exists(alt_past):
+        DEFAULT_PAST_PATH = alt_past
+
 DEFAULT_THIS_PATH = os.path.join(PROJEECT_BASE_DIR, "QC Raw Data-3.xlsx")
+if not os.path.exists(DEFAULT_THIS_PATH):
+    alt_this = os.path.join(os.path.dirname(__file__), "data", "QC Raw Data-3.xlsx")
+    if os.path.exists(alt_this):
+        DEFAULT_THIS_PATH = alt_this
+
 DEFAULT_MANUAL_CORRECTIONS_PATH = os.path.join(PROJEECT_BASE_DIR, "data", "manual_corrections.json")
 DEFAULT_ARCHIVE_PATH = os.path.join(PROJEECT_BASE_DIR, "data", "qc_fail_archive.csv")
 DEFAULT_SETTINGS_PATH = os.path.join(PROJEECT_BASE_DIR, "data", "impact_settings.json")
@@ -1807,10 +1817,22 @@ def upload_shape_period_b():
 @app.route('/api/metrics', methods=['GET'])
 @app.route('/api/shape/metrics', methods=['GET'])
 def get_shape_metrics():
+    date_from = request.args.get('date_from', '').strip()
+    date_to   = request.args.get('date_to', '').strip()
     try:
+        if date_from or date_to:
+            # Compute a fresh filtered analysis without poisoning the main cache
+            with SHAPE_ANALYZER_LOCK:
+                analyzer = get_shape_analyzer()
+                result = analyzer.analyze(date_from=date_from or None, date_to=date_to or None)
+            return jsonify(result)
         return jsonify(get_cached_shape_metrics())
     except Exception as e:
-        return jsonify({"error": f"Error computing metrics: {str(e)}"}), 500
+        # Fallback: if analyzer.analyze() doesn't accept date kwargs yet, return cached
+        try:
+            return jsonify(get_cached_shape_metrics())
+        except Exception as e2:
+            return jsonify({"error": f"Error computing metrics: {str(e2)}"}), 500
 
 
 @app.route('/api/drilldown', methods=['POST'])
@@ -1971,6 +1993,190 @@ def get_shape_explorer_classifications():
         return jsonify(analyzer.get_explorer_classifications(page, limit, search, sort_by, sort_order, status))
     except Exception as e:
         return jsonify({"error": f"Failed to fetch classifications: {str(e)}"}), 500
+
+
+# =============================================================================
+# NEW: Import Correction Sheet (POST)
+# =============================================================================
+@app.route('/api/shape/import_corrections', methods=['POST'])
+def shape_import_corrections():
+    """Imports an Excel correction workbook and saves each row as a manual correction entry."""
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'error': 'No file uploaded'}), 400
+    uploaded = request.files['file']
+    fname = (uploaded.filename or '').lower()
+    if not (fname.endswith('.xlsx') or fname.endswith('.xls')):
+        return jsonify({'success': False, 'error': 'Only .xlsx / .xls files are supported'}), 400
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(uploaded, read_only=True, data_only=True)
+        ws = wb.active
+        assert ws is not None
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            return jsonify({'success': True, 'imported': 0, 'skipped': 0, 'message': 'Empty file'})
+
+        # Map header names -> column indices
+        header = [str(c).strip().upper() if c is not None else '' for c in rows[0]]
+        def col(names):
+            for n in names:
+                for i, h in enumerate(header):
+                    if n.upper() in h:
+                        return i
+            return -1
+
+        c_pid   = col(['PID', 'PID.INVOICE', 'PIDINVOICE'])
+        c_date  = col(['DATE', 'TIMESTAMP', 'CORRECTION DATE'])
+        c_issue = col(['ISSUE', 'REASON', 'CORRECTION REASON'])
+        c_by    = col(['DONE BY', 'PERSON', 'OPERATOR', 'TECHNICIAN'])
+        c_sic   = col(['SHIFT IC', 'SHIFT_IC', 'IC'])
+        c_a     = col(['A'])
+        c_b     = col(['B'])
+        c_cr    = col(['CIRC R', 'CIRCR', 'CR'])
+        c_cl    = col(['CIRC L', 'CIRCL', 'CL'])
+        c_a1    = col(['A1'])
+        c_b1    = col(['B1'])
+        c_cr1   = col(['CIRC R1', 'CIRCR1', 'CR1'])
+        c_cl1   = col(['CIRC L1', 'CIRCL1', 'CL1'])
+        c_dev   = col(['% DEV', 'PCT DEV', 'DEVIATION', 'PERCENTAGE DEV'])
+        c_notes = col(['NOTES', 'REMARK', 'REMARKS'])
+
+        if c_pid < 0:
+            return jsonify({'success': False, 'error': 'Could not find PID column in the file header'}), 400
+
+        def cell(row, idx):
+            if idx < 0 or idx >= len(row):
+                return None
+            v = row[idx]
+            return str(v).strip() if v is not None else None
+
+        def safe_float(row, idx):
+            v = cell(row, idx)
+            if v is None:
+                return None
+            try:
+                return float(v)
+            except Exception:
+                return None
+
+        analyzer = get_shape_analyzer()
+        imported = 0
+        skipped  = 0
+        now_str  = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        for raw_row in rows[1:]:
+            pid = cell(raw_row, c_pid)
+            if not pid:
+                skipped += 1
+                continue
+            entry = {
+                'pid': pid,
+                'pid_invoice': pid,
+                'timestamp':   cell(raw_row, c_date) or now_str,
+                'issue_raw':   cell(raw_row, c_issue) or 'Imported Correction',
+                'done_by':     cell(raw_row, c_by)   or 'Import',
+                'shift_ic':    cell(raw_row, c_sic)  or '',
+                'a':      safe_float(raw_row, c_a),
+                'b':      safe_float(raw_row, c_b),
+                'circ_r': safe_float(raw_row, c_cr),
+                'circ_l': safe_float(raw_row, c_cl),
+                'a1':      safe_float(raw_row, c_a1),
+                'b1':      safe_float(raw_row, c_b1),
+                'circ_r1': safe_float(raw_row, c_cr1),
+                'circ_l1': safe_float(raw_row, c_cl1),
+                'percentage_dev': safe_float(raw_row, c_dev),
+                'notes':    cell(raw_row, c_notes) or '',
+                'is_imported': True,
+            }
+            try:
+                analyzer.save_manual_correction(entry)
+                imported += 1
+            except Exception:
+                skipped += 1
+
+        invalidate_shape_cache()
+        return jsonify({
+            'success': True,
+            'imported': imported,
+            'skipped': skipped,
+            'message': f'{imported} rows imported, {skipped} skipped.'
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Import failed: {str(e)}'}), 500
+
+
+# =============================================================================
+# NEW: Export Corrections Log (GET)
+# =============================================================================
+@app.route('/api/shape/export/corrections_log', methods=['GET'])
+def shape_export_corrections_log():
+    """Exports manual shape corrections as a formatted .xlsx file, optionally date-filtered."""
+    date_from = request.args.get('date_from', '').strip()
+    date_to   = request.args.get('date_to', '').strip()
+    try:
+        analyzer = get_shape_analyzer()
+        corrections = analyzer.get_manual_corrections()
+
+        # Filter
+        def in_range(entry):
+            ts = str(entry.get('timestamp', ''))[:10]
+            if date_from and ts < date_from:
+                return False
+            if date_to and ts > date_to:
+                return False
+            return True
+
+        rows = [e for e in corrections if in_range(e)]
+
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = 'Corrections Log'
+
+        headers = ['Timestamp', 'PID.Invoice', 'Issue', 'Done By', 'Shift IC',
+                   'A', 'B', 'CIRC R', 'CIRC L', 'A1', 'B1', 'CIRC R1', 'CIRC L1',
+                   '% Dev', 'Notes']
+        hdr_fill = PatternFill(start_color='1F2937', end_color='1F2937', fill_type='solid')
+        hdr_font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
+        ws.append(headers)
+        for col_idx in range(1, len(headers) + 1):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.fill = hdr_fill
+            cell.font = hdr_font
+            cell.alignment = Alignment(horizontal='center')
+
+        def dim(entry, key):
+            b = entry.get('dims_before') or {}
+            a = entry.get('dims_after') or {}
+            dim_map = {'A': (b, 'A'), 'B': (b, 'B'), 'CIRC R': (b, 'CIRC_R'), 'CIRC L': (b, 'CIRC_L'),
+                       'A1': (a, 'A1'), 'B1': (a, 'B1'), 'CIRC R1': (a, 'CIRC_R1'), 'CIRC L1': (a, 'CIRC_L1')}
+            src, k = dim_map.get(key, ({}, key))
+            # Also try direct fields (inline logging strip saves directly)
+            direct = entry.get(k.lower().replace(' ', '_')) or entry.get(k)
+            return direct if direct is not None else src.get(k)
+
+        for e in rows:
+            ws.append([
+                str(e.get('timestamp', ''))[:19],
+                e.get('pid_invoice') or e.get('pid', ''),
+                e.get('issue_raw', ''),
+                e.get('done_by', ''),
+                e.get('shift_ic', ''),
+                dim(e, 'A'), dim(e, 'B'), dim(e, 'CIRC R'), dim(e, 'CIRC L'),
+                dim(e, 'A1'), dim(e, 'B1'), dim(e, 'CIRC R1'), dim(e, 'CIRC L1'),
+                e.get('percentage_dev'),
+                e.get('notes', '')
+            ])
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        fname = f"Shape_Corrections_Log_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        return send_file(buf, download_name=fname, as_attachment=True,
+                         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    except Exception as e:
+        return jsonify({'error': f'Export failed: {str(e)}'}), 500
 
 
 @app.route('/api/manual_corrections', methods=['GET'])

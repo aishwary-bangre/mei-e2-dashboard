@@ -7,6 +7,8 @@ const expMasterState = { page: 1, limit: 50, search: "", sort_by: "date", sort_o
 const expCorrState = { page: 1, limit: 50, search: "", sort_by: "timestamp", sort_order: "desc" };
 
 let shapeCorrectionInitialized = false;
+let scDateFrom = '';
+let scDateTo = '';
 
 function initShapeCorrectionTab() {
     if (!shapeCorrectionInitialized) {
@@ -15,7 +17,8 @@ function initShapeCorrectionTab() {
         setupExplorerSubtabs();
         setupExplorerControls();
         setupManualCorrectionModal();
-        setupHeroSearch();
+        setupControlStrip();
+        setupLoggingStrip();
 
         const btnClose = document.getElementById('btn-close-modal');
         if (btnClose) {
@@ -49,28 +52,198 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // =====================
-// HERO SEARCH (top bar)
+// CONTROL STRIP SETUP
 // =====================
-function setupHeroSearch() {
-    const input = document.getElementById('hero-pid-search');
-    const btn = document.getElementById('hero-pid-search-btn');
-    const logBtn = document.getElementById('btn-log-correction-top');
+function setupControlStrip() {
+    // Import Correction Sheet
+    const importBtn = document.getElementById('btn-import-corrections');
+    const importInput = document.getElementById('input-import-corrections');
+    const importStatus = document.getElementById('lbl-import-status');
+    if (importBtn && importInput) {
+        importBtn.addEventListener('click', () => importInput.click());
+        importInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) uploadImportCorrections(e.target.files[0], importStatus);
+        });
+    }
 
-    const doSearch = () => {
-        const q = input.value.trim();
-        if (q) {
-            // Switch to explorer view, PID tab
-            document.getElementById('tab-btn-explorer').click();
-            document.getElementById('subtab-pid').click();
-            document.getElementById('exp-pid-input').value = q;
-            fetchPIDHistory(q);
+    // Date filter
+    const applyBtn = document.getElementById('btn-sc-date-apply');
+    const clearBtn = document.getElementById('btn-sc-date-clear');
+    if (applyBtn) applyBtn.addEventListener('click', () => {
+        scDateFrom = document.getElementById('sc-date-from').value;
+        scDateTo   = document.getElementById('sc-date-to').value;
+        fetchMetrics();
+    });
+    if (clearBtn) clearBtn.addEventListener('click', () => {
+        document.getElementById('sc-date-from').value = '';
+        document.getElementById('sc-date-to').value = '';
+        scDateFrom = ''; scDateTo = '';
+        fetchMetrics();
+    });
+
+    // Corrections log export
+    const expLog = document.getElementById('btn-sc-export-corrections-log');
+    if (expLog) expLog.addEventListener('click', () => {
+        const from = document.getElementById('sc-date-from').value;
+        const to   = document.getElementById('sc-date-to').value;
+        let url = '/api/shape/export/corrections_log';
+        const params = [];
+        if (from) params.push(`date_from=${from}`);
+        if (to)   params.push(`date_to=${to}`);
+        if (params.length) url += '?' + params.join('&');
+        window.location = url;
+    });
+}
+
+// =====================
+// LOGGING STRIP SETUP
+// =====================
+function setupLoggingStrip() {
+    // Restore persisted operator / shift IC
+    ['sc_shift_ic', 'sc_operator'].forEach(key => {
+        const el = document.querySelector(`[data-persist="${key}"]`);
+        if (el) {
+            const saved = localStorage.getItem(key);
+            if (saved) el.value = saved;
+            el.addEventListener('change', () => localStorage.setItem(key, el.value));
         }
+    });
+
+    // Auto-set timestamp to now
+    const tsInput = document.getElementById('sc-log-timestamp');
+    if (tsInput && !tsInput.value) {
+        const now = new Date();
+        tsInput.value = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    }
+
+    // Collapse toggle
+    const collapseBtn = document.getElementById('btn-sc-log-collapse');
+    const logBody = document.getElementById('sc-log-body');
+    if (collapseBtn && logBody) {
+        collapseBtn.addEventListener('click', () => {
+            const collapsed = logBody.classList.toggle('collapsed');
+            collapseBtn.textContent = collapsed ? '▼' : '▲';
+        });
+    }
+
+    // Dimensions toggle
+    const dimsToggle = document.getElementById('btn-sc-dims-toggle');
+    const dimsPanel = document.getElementById('sc-log-dims');
+    if (dimsToggle && dimsPanel) {
+        dimsToggle.addEventListener('click', () => {
+            const shown = dimsPanel.classList.toggle('hidden');
+            dimsToggle.classList.toggle('active', !shown);
+            dimsToggle.textContent = shown ? '+ Dimensions' : '− Dimensions';
+        });
+    }
+
+    // Custom reason toggle
+    const issueSelect = document.getElementById('sc-log-issue');
+    const customRow = document.getElementById('sc-log-custom-row');
+    if (issueSelect && customRow) {
+        issueSelect.addEventListener('change', () => {
+            customRow.classList.toggle('hidden', issueSelect.value !== 'OTHER');
+        });
+    }
+
+    // Submit
+    const submitBtn = document.getElementById('btn-sc-log-submit');
+    if (submitBtn) submitBtn.addEventListener('click', saveInlineCorrection);
+}
+
+async function uploadImportCorrections(file, statusEl) {
+    if (statusEl) statusEl.textContent = `Importing ${file.name}...`;
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+        const res = await fetch('/api/shape/import_corrections', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.error || 'Import failed');
+        if (statusEl) statusEl.textContent = `✓ ${data.imported} imported, ${data.skipped} skipped`;
+        await fetchMetrics();
+    } catch (e) {
+        if (statusEl) statusEl.textContent = `✗ ${e.message}`;
+        alert(`Import failed: ${e.message}`);
+    }
+}
+
+async function saveInlineCorrection() {
+    const pid = (document.getElementById('sc-log-pid').value || '').trim();
+    if (!pid) { showLogFeedback('PID / Invoice is required.', 'error'); return; }
+
+    const issueRaw = document.getElementById('sc-log-issue').value === 'OTHER'
+        ? (document.getElementById('sc-log-issue-custom').value.trim() || 'Other')
+        : document.getElementById('sc-log-issue').value;
+
+    const shiftIc  = document.getElementById('sc-log-shift-ic').value;
+    const operator = document.getElementById('sc-log-operator').value;
+    const ts       = document.getElementById('sc-log-timestamp').value;
+
+    const floatOrNull = (id) => {
+        const v = document.getElementById(id).value;
+        const n = parseFloat(v);
+        return isNaN(n) ? null : n;
     };
 
-    btn.addEventListener('click', doSearch);
-    input.addEventListener('keypress', (e) => { if (e.key === 'Enter') doSearch(); });
-    logBtn.addEventListener('click', () => openManualCorrectionModal());
+    const payload = {
+        pid, pid_invoice: pid,
+        issue_raw: issueRaw,
+        done_by: operator,
+        shift_ic: shiftIc,
+        timestamp: ts ? ts.replace('T', ' ') + ':00' : null,
+        percentage_dev: floatOrNull('sc-dim-dev'),
+        a:  floatOrNull('sc-dim-a'),  b:  floatOrNull('sc-dim-b'),
+        circ_r: floatOrNull('sc-dim-cr'), circ_l: floatOrNull('sc-dim-cl'),
+        a1: floatOrNull('sc-dim-a1'), b1: floatOrNull('sc-dim-b1'),
+        circ_r1: floatOrNull('sc-dim-cr1'), circ_l1: floatOrNull('sc-dim-cl1'),
+        notes: document.getElementById('sc-dim-notes').value.trim()
+    };
+
+    const btn = document.getElementById('btn-sc-log-submit');
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+
+    try {
+        const res = await fetch('/api/shape/manual_corrections', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Save failed');
+
+        // Reset form
+        document.getElementById('sc-log-pid').value = '';
+        // Reset timestamp to now
+        const now = new Date();
+        document.getElementById('sc-log-timestamp').value =
+            new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+        // Collapse dims
+        const dimsPanel = document.getElementById('sc-log-dims');
+        if (dimsPanel && !dimsPanel.classList.contains('hidden')) {
+            dimsPanel.classList.add('hidden');
+            const t = document.getElementById('btn-sc-dims-toggle');
+            if (t) { t.classList.remove('active'); t.textContent = '+ Dimensions'; }
+        }
+        showLogFeedback(`✓ Correction saved for PID ${pid}`, 'success');
+        await fetchMetrics();
+        if (currentLookupPID && currentLookupPID === pid) fetchPIDHistory(pid);
+    } catch (e) {
+        showLogFeedback(`✗ ${e.message}`, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '✓ Log Correction';
+    }
 }
+
+function showLogFeedback(msg, type) {
+    const fb = document.getElementById('sc-log-feedback');
+    if (!fb) return;
+    fb.textContent = msg;
+    fb.className = `sc-log-feedback ${type}`;
+    fb.classList.remove('hidden');
+    setTimeout(() => fb.classList.add('hidden'), 4000);
+}
+
 
 // =====================
 // STATUS & DATA LOADING
@@ -179,7 +352,11 @@ async function fetchMetrics() {
 
 async function fetchMetricsCore() {
     try {
-        const res = await fetch('/api/metrics');
+        const params = new URLSearchParams();
+        if (scDateFrom) params.set('date_from', scDateFrom);
+        if (scDateTo)   params.set('date_to', scDateTo);
+        const url = '/api/metrics' + (params.toString() ? '?' + params.toString() : '');
+        const res = await fetch(url);
         if (!res.ok) throw new Error("Error fetching metrics");
         const data = await res.json();
         globalData = data;
@@ -324,7 +501,6 @@ function setupMainTabs() {
     document.getElementById('impact-search').addEventListener('input', () => renderImpactTable());
     document.getElementById('impact-status').addEventListener('change', () => renderImpactTable());
     document.getElementById('btn-impact-save').addEventListener('click', saveImpactSettings);
-    document.getElementById('btn-impact-log').addEventListener('click', () => openManualCorrectionModal());
     document.getElementById('btn-impact-check').addEventListener('click', checkPidInvoice);
     document.getElementById('impact-check-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') checkPidInvoice(); });
 }
@@ -942,7 +1118,16 @@ function openManualCorrectionModal(pid = '', existingEntry = null) {
     let p_val = existingEntry ? (existingEntry.pid_invoice || existingEntry.pid) : pid;
     document.getElementById('manual-pid').value = p_val || '';
     
-    document.getElementById('manual-done-by').value = existingEntry ? existingEntry.done_by : 'QC Lead';
+    document.getElementById('manual-done-by').value = existingEntry
+        ? existingEntry.done_by
+        : (localStorage.getItem('sc_operator') || 'QC Lead');
+    
+    const shiftIcSel = document.getElementById('manual-shift-ic');
+    if (shiftIcSel) {
+        shiftIcSel.value = existingEntry
+            ? (existingEntry.shift_ic || localStorage.getItem('sc_shift_ic') || 'ADITI')
+            : (localStorage.getItem('sc_shift_ic') || 'ADITI');
+    }
     
     const now = new Date();
     document.getElementById('manual-timestamp').value = existingEntry && existingEntry.timestamp 
@@ -984,6 +1169,7 @@ async function saveManualCorrectionForm() {
         pid: pid,
         pid_invoice: pid,
         done_by: doneBy,
+        shift_ic: (document.getElementById('manual-shift-ic') || {}).value || '',
         timestamp: ts ? ts.replace('T', ' ') + ':00' : null,
         issue_raw: issueRaw,
         percentage_dev: !isNaN(parseFloat(document.getElementById('manual-percentage-dev').value)) ? parseFloat(document.getElementById('manual-percentage-dev').value) : null,

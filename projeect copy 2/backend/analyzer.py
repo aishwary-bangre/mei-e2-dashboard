@@ -101,7 +101,7 @@ def _json_safe(o):
 
 class MEIAnalyzer:
     def __init__(self, past_file_path: str, this_file_path: str, correction_log_path: str = None, manual_corrections_path: str = "data/manual_corrections.json", archive_path: str = "data/qc_fail_archive.csv", settings_path: str = "data/impact_settings.json",
-                 correction_sheets=("21-28JULY", "29JULY-3AUG", "1-7AUG", "2-8AUG")):
+                 correction_sheets=("Tracing New Correction", "29JULY-3AUG", "1-7AUG", "2-8AUG", "7-14AUG", "15-20AUG", "21-28JULY")):
         self.past_file_path = past_file_path
         self.this_file_path = this_file_path
         self.correction_log_path = correction_log_path or "/Users/khushi.bodhwani_240893/Downloads/MEI SHAPE CORRECTION .xlsx"
