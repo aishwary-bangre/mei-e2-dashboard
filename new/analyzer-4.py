@@ -5,6 +5,8 @@ import re
 import math
 import json
 import uuid
+import hashlib
+from datetime import datetime
 from rapidfuzz import fuzz
 
 # ---- Only machine-attributable shape reasons (fitter reasons removed) ----
@@ -70,12 +72,33 @@ def _normalize_correction_issue(raw: str) -> str | None:
     return "OTHER SHAPE"
 
 
+def _person_name(raw) -> str:
+    """Return the person's name, or '' when the cell holds an ID/number or a placeholder.
+
+    Rule: a name must contain at least two consecutive letters and no digits. So "Ravi Kumar"
+    and "QC Lead" are kept; "21", "170379", "T0018024" and "THRS204578TFR" are not a person
+    and become blank (shown as "-" in the dashboard).
+    """
+    t = str(raw).strip() if raw is not None else ''
+    if t.lower() in ('', 'nan', 'none', 'operator', 'user', 'n/a'):
+        return ''
+    if not re.search(r'[A-Za-z]{2,}', t) or re.search(r'\d', t):
+        return ''
+    return t
+
+
 class MEIAnalyzer:
-    def __init__(self, past_file_path: str, this_file_path: str, correction_log_path: str = None, manual_corrections_path: str = "data/manual_corrections.json"):
+    def __init__(self, past_file_path: str, this_file_path: str, correction_log_path: str = None, manual_corrections_path: str = "data/manual_corrections.json", archive_path: str = "data/qc_fail_archive.csv"):
         self.past_file_path = past_file_path
         self.this_file_path = this_file_path
         self.correction_log_path = correction_log_path or "/Users/khushi.bodhwani_240893/Downloads/MEI SHAPE CORRECTION .xlsx"
         self.manual_corrections_path = manual_corrections_path
+        self.archive_path = archive_path
+        self.archive_manifest_path = os.path.splitext(archive_path)[0] + "_manifest.json"
+        self._archive_cache = None  # (mtime, size, DataFrame)
+        self.archive_error = None
+        self.qc_done = {}
+        self.row_cap_notes = []
 
         self.df_past = None
         self.df_this = None
@@ -87,6 +110,17 @@ class MEIAnalyzer:
 
         self._load_data()
         self._cluster_reasons()
+
+    def _read_row_cap(self, file_path):
+        try:
+            hdr = pd.read_excel(file_path, header=None, nrows=2, engine='calamine')
+            for v in hdr.iloc[:, 0].astype(str):
+                m = re.search(r'limited to (\d+) rows', v)
+                if m:
+                    return int(m.group(1))
+        except Exception:
+            pass
+        return None
 
     def _parse_filter_date(self, file_path: str) -> str:
         try:
@@ -126,8 +160,12 @@ class MEIAnalyzer:
 
         self.df_this = pd.read_excel(self.this_file_path, skiprows=2, engine='calamine')
 
-        if len(self.df_past) == 500000 or len(self.df_this) == 500000:
-            self.row_cap_warning = True
+        self.row_cap_notes = []
+        for lbl, pth, raw in (("Period A", self.past_file_path, self.df_past), ("Period B", self.this_file_path, self.df_this)):
+            cap = self._read_row_cap(pth)
+            if cap and len(raw) >= cap:
+                self.row_cap_notes.append(f"{lbl} export hit its {cap:,}-row limit, so rows are missing and counts are a lower bound.")
+        self.row_cap_warning = bool(self.row_cap_notes)
 
         for i in range(2):
             df = self.df_past if i == 0 else self.df_this
@@ -136,6 +174,20 @@ class MEIAnalyzer:
             # Filter out non-lens items (e.g. FRAME, SUNGLASS)
             if 'item_type' in df.columns:
                 df = df[df['item_type'].astype(str).str.upper().isin(['RIGHTLENS', 'LEFTLENS'])]
+
+            # QC Done = lens rows with a final result (the export's pass status is 'QCPass'; Hold/Unhold are not final).
+            # Shift = when the lens was CUT (mei_done); QC_created_date carries no time of day.
+            df = df.copy()
+            df['status'] = df['status'].astype(str).str.strip()
+            df['mei_datetime'] = pd.to_datetime(df['mei_done'], errors='coerce') if 'mei_done' in df.columns else pd.to_datetime(pd.Series(pd.NaT, index=df.index))
+            df['shift_bucket'] = df['mei_datetime'].dt.hour.fillna(-1).astype(int).apply(self._get_shift_bucket)
+            done = df[df['status'].isin(['QCPass', 'QCPassed', 'QCFailed'])]
+            self.qc_done[p_label] = {
+                'total': int(len(done)),
+                'failed_all_reasons': int((done['status'] == 'QCFailed').sum()),
+                'by_shift': {k: int(v) for k, v in done['shift_bucket'].value_counts().items()},
+                'held': int(df['status'].isin(['QCHold', 'QCUnhold']).sum()),
+            }
 
             df['parent_uw'] = df['parent_uw'].fillna(df['vendor_invoice_number']).fillna(df['product_id'])
             df['pid'] = df['frame_product_id'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
@@ -147,21 +199,19 @@ class MEIAnalyzer:
                 "Lens slip by machine", "Lens Big Size issue", 
                 "WRONG SHAPE", "POP OUT", "Lens chipped off while fitting process"
             ]
-            mask_pass = df['status'] == 'QCPassed'
             mask_fail = (df['status'] == 'QCFailed') & (df['reason_qc_fail'].isin(allowed_reasons))
-            df = df[mask_pass | mask_fail]
+            df = df[mask_fail].copy()
             
             df['qc_person_id'] = df['qc_person_id'].fillna('Unknown_Machine').astype(str).str.strip()
             df['vendor_invoice_number'] = df['vendor_invoice_number'].fillna('Unknown_Vendor').astype(str).str.strip()
             df['tray_id'] = df['tray_id'].fillna('Unknown_Tray').astype(str).str.strip()
             df['period'] = p_label
 
-            if 'QC_created_date' in df.columns:
-                df['created_datetime'] = pd.to_datetime(df['QC_created_date'], errors='coerce')
-                df['hour'] = df['created_datetime'].dt.hour.fillna(-1)
-                df['shift_bucket'] = df['hour'].apply(self._get_shift_bucket)
-            else:
-                df['shift_bucket'] = 'Day Shift'
+            df['created_datetime'] = pd.to_datetime(df['QC_created_date'], errors='coerce') if 'QC_created_date' in df.columns else pd.NaT
+
+            # Keep every period ever loaded in a running archive (uploads replace Period A/B,
+            # the archive does not), so the Master Database always spans first -> last entry.
+            self._archive_ingest(df, self.week_past_label if i == 0 else self.week_this_label, p_label)
 
             if i == 0:
                 self.df_past = df
@@ -229,7 +279,7 @@ class MEIAnalyzer:
                                 'timestamp': ts,
                                 'issue_raw': iss,
                                 'issue_normalized': norm_issue,
-                                'DONE BY': by,
+                                'DONE BY': _person_name(by),
                                 'sheet': s,
                                 'PERCENTAGE': pd.to_numeric(row[pct_col], errors='coerce') if pct_col else None,
                                 'A': pd.to_numeric(row[a_col], errors='coerce') if a_col else None,
@@ -294,7 +344,7 @@ class MEIAnalyzer:
                         'timestamp': ts,
                         'issue_raw': iss_raw,
                         'issue_normalized': _normalize_correction_issue(iss_raw) or "OTHER SHAPE",
-                        'DONE BY': str(item.get('done_by', 'User')),
+                        'DONE BY': _person_name(item.get('done_by', '')),
                         'sheet': 'Manual Entry (User)',
                         'is_manual': True,
                         'PERCENTAGE': float(item['percentage_dev']) if item.get('percentage_dev') is not None else None,
@@ -443,6 +493,234 @@ class MEIAnalyzer:
         except Exception:
             return []
 
+
+    # ==========================================================
+    # RUNNING ARCHIVE + MASTER DATABASE
+    # ==========================================================
+    ARCHIVE_COLS = [
+        'increment_id', 'product_id', 'pid', 'brand', 'shipping_package_id', 'QC_created_date',
+        'mei_done', 'parent_uw', 'item_type', 'uw_item_id', 'barcode', 'status', 'reason_qc_fail',
+        'QC Fail No of Times', 'qc_person_id', 'fitter_name', 'tray_id', 'vendor_invoice_number',
+        'dot_invoice', 'invoice_date', 'sph', 'cyl', 'lens_index', 'shift_bucket',
+    ]
+    ARCHIVE_KEY_COLS = ['uw_item_id', 'barcode', 'QC_created_date', 'status', 'reason_qc_fail', 'qc_person_id', 'tray_id']
+
+    def _archive_ingest(self, df, source_label, period_label):
+        """Append rows of a loaded period that the archive does not have yet (idempotent).
+
+        Only MEI-attributable QCFailed rows are archived (same filter the dashboard uses).
+        A row's key is a hash of its identifying fields plus its occurrence number inside the
+        batch, so re-loading the same file, or an overlapping export, never double-counts,
+        while genuine identical repeat rows inside one export are all kept.
+        """
+        try:
+            b = df[df['status'] == 'QCFailed'].copy()
+            if b.empty:
+                return
+            for c in self.ARCHIVE_COLS:
+                if c not in b.columns:
+                    b[c] = None
+            b = b[self.ARCHIVE_COLS].copy()
+            b['QC_created_date'] = pd.to_datetime(b['QC_created_date'], errors='coerce')
+            base = b[self.ARCHIVE_KEY_COLS].astype(str).agg('|'.join, axis=1).map(
+                lambda t: hashlib.md5(t.encode('utf-8')).hexdigest()[:16])
+            b['row_key'] = base + '#' + base.groupby(base).cumcount().astype(str)
+
+            existing = set()
+            if os.path.exists(self.archive_path):
+                existing = set(pd.read_csv(self.archive_path, usecols=['row_key'], dtype=str)['row_key'])
+            new_rows = b[~b['row_key'].isin(existing)].copy()
+
+            now = str(pd.Timestamp.now())[:19]
+            if not new_rows.empty:
+                new_rows['source_label'] = source_label
+                new_rows['ingested_at'] = now
+                os.makedirs(os.path.dirname(os.path.abspath(self.archive_path)), exist_ok=True)
+                new_rows.to_csv(self.archive_path, mode='a', header=not os.path.exists(self.archive_path), index=False)
+                self._archive_cache = None
+
+            # Ledger of what was loaded (one entry per distinct source, updated in place)
+            manifest = []
+            if os.path.exists(self.archive_manifest_path):
+                try:
+                    with open(self.archive_manifest_path, 'r') as f:
+                        manifest = json.load(f)
+                except Exception:
+                    manifest = []
+            d_min, d_max = b['QC_created_date'].min(), b['QC_created_date'].max()
+            sig = (source_label, int(len(b)), str(d_min)[:10], str(d_max)[:10])
+            hit = next((m for m in manifest if (m.get('source_label'), m.get('rows_in_file'), m.get('first_date'), m.get('last_date')) == sig), None)
+            if hit is None:
+                manifest.append({
+                    'source_label': source_label, 'loaded_as': period_label, 'rows_in_file': int(len(b)),
+                    'rows_added': int(len(new_rows)), 'first_date': sig[2], 'last_date': sig[3], 'ingested_at': now,
+                })
+            else:
+                hit['loaded_as'] = period_label
+                hit['last_seen_at'] = now
+            with open(self.archive_manifest_path, 'w') as f:
+                json.dump(manifest, f, indent=2)
+            self.archive_error = None
+        except Exception as e:
+            self.archive_error = str(e)
+            print(f"Archive ingest error: {e}")
+
+    def _get_archive_df(self):
+        if not os.path.exists(self.archive_path):
+            return pd.DataFrame(columns=self.ARCHIVE_COLS)
+        st = os.stat(self.archive_path)
+        if self._archive_cache and self._archive_cache[0] == st.st_mtime and self._archive_cache[1] == st.st_size:
+            return self._archive_cache[2]
+        a = pd.read_csv(self.archive_path, dtype=str)
+        a['QC_created_date'] = pd.to_datetime(a['QC_created_date'], errors='coerce')
+        self._archive_cache = (st.st_mtime, st.st_size, a)
+        return a
+
+    @staticmethod
+    def _clean_str(series):
+        return series.fillna('').astype(str).replace({'nan': '', 'None': '', 'Unknown_Vendor': '', 'Unknown_Machine': ''})
+
+    def _build_master(self):
+        """One chronological table: every archived QC fail + every correction (workbook + manual)."""
+        frames = []
+
+        arch = self._get_archive_df()
+        if arch.empty:  # archive unavailable -> fall back to the periods currently in memory
+            cur = pd.concat([self.df_past, self.df_this], ignore_index=True)
+            arch = cur[cur['status'] == 'QCFailed'].copy()
+            arch['source_label'] = arch['period']
+            arch['QC_created_date'] = pd.to_datetime(arch['QC_created_date'], errors='coerce')
+        if not arch.empty:
+            v = self._clean_str(arch['vendor_invoice_number'])
+            d = self._clean_str(arch['dot_invoice'])
+            inv = np.where((v != '') & (d != ''), v + ' (' + d + ')', np.where(v != '', v, d))
+            pid = arch['pid'].fillna('').astype(str)
+            frames.append(pd.DataFrame({
+                'type': 'QC Fail',
+                'date': arch['QC_created_date'],
+                'pid': pid.values,
+                'pid_invoice': np.where(inv != '', pid.values + '.' + inv, pid.values),
+                'who': self._clean_str(arch['qc_person_id']).values,
+                'reason': arch['reason_qc_fail'].fillna('').astype(str).values,
+                'detail': (arch['shift_bucket'].fillna('').astype(str) + ' | tray ' + arch['tray_id'].fillna('').astype(str)
+                           + ' | ' + arch['item_type'].fillna('').astype(str)).values,
+                'source': arch['source_label'].fillna('').astype(str).values,
+            }))
+
+        log = self.df_log_all if getattr(self, 'df_log_all', None) is not None and not self.df_log_all.empty else self.df_log
+        if log is not None and not log.empty:
+            def dims(row):
+                f = lambda x: '-' if pd.isna(x) else f"{float(x):g}"
+                return (f"A:{f(row.get('A'))} B:{f(row.get('B'))} CR:{f(row.get('CIRC R'))} CL:{f(row.get('CIRC L'))}  ->  "
+                        f"A1:{f(row.get('A1'))} B1:{f(row.get('B1'))} CR1:{f(row.get('CIRC R1'))} CL1:{f(row.get('CIRC L1'))}")
+            pid_c = log['pid'].fillna('').astype(str)
+            pinv = log['pid_invoice'].fillna('').astype(str) if 'pid_invoice' in log.columns else pid_c
+            frames.append(pd.DataFrame({
+                'type': 'Correction',
+                'date': pd.to_datetime(log['timestamp'], errors='coerce'),
+                'pid': pid_c.values,
+                'pid_invoice': np.where(pinv.str.strip() != '', pinv, pid_c).tolist(),
+                'who': log['DONE BY'].fillna('').astype(str).values,
+                'reason': log['issue_raw'].fillna('').astype(str).values,
+                'detail': log.apply(dims, axis=1).values,
+                'source': log['sheet'].fillna('').astype(str).values,
+            }))
+
+        if not frames:
+            return pd.DataFrame(columns=['type', 'date', 'pid', 'pid_invoice', 'who', 'reason', 'detail', 'source'])
+        return pd.concat(frames, ignore_index=True)
+
+    def _filter_master(self, search="", type_filter="all", date_from="", date_to="", sort_order="desc"):
+        m = self._build_master()
+        if type_filter == "fail":
+            m = m[m['type'] == 'QC Fail']
+        elif type_filter == "correction":
+            m = m[m['type'] == 'Correction']
+        if date_from:
+            m = m[m['date'] >= pd.to_datetime(date_from, errors='coerce')]
+        if date_to:
+            m = m[m['date'] < pd.to_datetime(date_to, errors='coerce') + pd.Timedelta(days=1)]
+        if search:
+            q = str(search).lower().strip()
+            mask = pd.Series(False, index=m.index)
+            for c in ['pid', 'pid_invoice', 'who', 'reason', 'source', 'detail']:
+                mask |= m[c].astype(str).str.lower().str.contains(q, na=False, regex=False)
+            m = m[mask]
+        return m.sort_values(['date', 'pid'], ascending=(sort_order == "asc"), kind='mergesort', na_position='last')
+
+    @staticmethod
+    def _fmt_master_date(ts, with_time):
+        if pd.isna(ts):
+            return ''
+        return str(ts)[:19] if with_time else str(ts)[:10]
+
+    def get_explorer_master(self, page=1, limit=50, search="", type_filter="all", date_from="", date_to="", sort_order="desc"):
+        m = self._filter_master(search, type_filter, date_from, date_to, sort_order)
+        total = len(m)
+        pg = m.iloc[(page - 1) * limit: page * limit]
+        rows = [{
+            "type": r.type, "date": self._fmt_master_date(r.date, r.type == 'Correction'), "pid": r.pid,
+            "pid_invoice": r.pid_invoice, "who": r.who, "reason": r.reason, "detail": r.detail, "source": r.source,
+        } for r in pg.itertuples()]
+        return {"total_rows": total, "page": page, "limit": limit,
+                "total_pages": math.ceil(total / limit) if total else 1, "data": rows}
+
+    def export_master_rows(self, search="", type_filter="all", date_from="", date_to="", sort_order="asc"):
+        m = self._filter_master(search, type_filter, date_from, date_to, sort_order).copy()
+        m['date'] = [self._fmt_master_date(r.date, r.type == 'Correction') for r in m.itertuples()]
+        return m.rename(columns={'type': 'Type', 'date': 'Date', 'pid': 'PID', 'pid_invoice': 'PID.Invoice',
+                                 'who': 'Machine / Tech', 'reason': 'Reason', 'detail': 'Details', 'source': 'Source'})
+
+    def get_master_summary(self):
+        m = self._build_master()
+        fails = m[m['type'] == 'QC Fail']
+        corr = m[m['type'] == 'Correction']
+        dmin = lambda s: None if s.dropna().empty else str(s.min())[:10]
+        dmax = lambda s: None if s.dropna().empty else str(s.max())[:10]
+
+        warnings = []
+        if self.archive_error:
+            warnings.append(f"Archive could not be updated ({self.archive_error}). Showing only the periods currently loaded.")
+        warnings.extend(self.row_cap_notes)
+        fd = fails['date'].dropna().dt.normalize().drop_duplicates().sort_values()
+        if len(fd) > 1:
+            gaps = fd.diff().dt.days
+            for idx in gaps[gaps > 3].index:
+                end = fd.loc[idx]; start = end - pd.Timedelta(days=int(gaps.loc[idx]))
+                warnings.append(f"No QC fail records between {str(start)[:10]} and {str(end)[:10]} "
+                                f"({int(gaps.loc[idx]) - 1} days). A weekly export may be missing.")
+        if not fails.empty and not corr.empty:
+            lf, lc = fails['date'].max(), corr['date'].max()
+            if pd.notna(lf) and pd.notna(lc) and lc > lf + pd.Timedelta(days=1):
+                warnings.append(f"Corrections run to {str(lc)[:10]} but QC fail data ends {str(lf)[:10]}. "
+                                f"Upload newer QC exports to see whether those corrections held.")
+        if not fails.empty:
+            age = (pd.Timestamp.now().normalize() - fails['date'].max().normalize()).days
+            if age > 8:
+                warnings.append(f"Latest QC fail record is {age} days old ({str(fails['date'].max())[:10]}).")
+
+        manifest = []
+        if os.path.exists(self.archive_manifest_path):
+            try:
+                with open(self.archive_manifest_path, 'r') as f:
+                    manifest = json.load(f)
+            except Exception:
+                manifest = []
+        refreshed = None
+        for pth in (self.archive_path, self.manual_corrections_path):
+            if os.path.exists(pth):
+                t = datetime.fromtimestamp(os.path.getmtime(pth)).strftime('%Y-%m-%d %H:%M:%S')
+                refreshed = t if refreshed is None or t > refreshed else refreshed
+
+        return {
+            "first_entry": dmin(m['date']), "last_entry": dmax(m['date']),
+            "total_records": int(len(m)), "fails": int(len(fails)), "corrections": int(len(corr)),
+            "first_fail": dmin(fails['date']), "last_fail": dmax(fails['date']),
+            "first_correction": dmin(corr['date']), "last_correction": dmax(corr['date']),
+            "last_updated": refreshed, "sources": sorted(manifest, key=lambda x: x.get('first_date') or ''),
+            "warnings": warnings,
+        }
+
     def _get_shift_bucket(self, hour):
         if hour < 0:
             return 'Unknown'
@@ -523,239 +801,112 @@ class MEIAnalyzer:
         # Keep all QC data — don't filter out non-MEI fails from the dataframe
         # We need total QC Done counts for fail rate calculation
 
+    SHIFT_ORDER = ['Morning Shift (06:00-14:00)', 'Evening Shift (14:00-22:00)', 'Night Shift (22:00-06:00)', 'Unknown']
+
+    @staticmethod
+    def _shape_bucket(reason):
+        u = str(reason).upper()
+        if 'SMALL' in u: return "Small size"
+        if 'BIG' in u: return "Big size"
+        if 'WRONG SHAPE' in u or 'W/SHAPE' in u: return "Wrong shape"
+        if 'SLIP' in u: return "Lens slip"
+        if 'POP' in u: return "Pop out"
+        if 'CHIP' in u: return "Chipped (fitting)"
+        return str(reason)
+
     def analyze(self):
-        # --- Total QC Done (all statuses, lens only) ---
-        total_qc_done_past = len(self.df_past)
-        total_qc_done_this = len(self.df_this)
+        """Period A vs Period B view of MEI shape failures.
 
-        # --- MEI shape failures (event-level, not unique PIDs) ---
-        df_p_mei = self.df_past[(self.df_past['status'] == 'QCFailed') & (self.df_past['reason_cluster'].isin(self.mei_clusters))]
-        df_t_mei = self.df_this[(self.df_this['status'] == 'QCFailed') & (self.df_this['reason_cluster'].isin(self.mei_clusters))]
+        Fail rate = MEI shape fail events / QC Done (lens rows QCPass + QCFailed, all reasons).
+        Outcome of each Period-A failed PID is judged against Period B:
+          a correction counts if logged on/after the PID's first Period-A fail and before the end of Period B;
+          it 'recurred' if a lens cut AFTER that correction still failed in Period B.
+        """
+        mei = lambda df: df[(df['status'] == 'QCFailed') & (df['reason_cluster'].isin(self.mei_clusters))]
+        df_a, df_b = mei(self.df_past), mei(self.df_this)
+        qa, qb = self.qc_done.get('Period A', {}), self.qc_done.get('Period B', {})
+        rate = lambda n, d: round(n / d * 100, 2) if d else 0.0
+        ev_a, ev_b = len(df_a), len(df_b)
 
-        total_mei_fail_events_past = len(df_p_mei)
-        total_mei_fail_events_this = len(df_t_mei)
+        valid = lambda df: {p for p in df['pid'].unique() if pd.notna(p) and str(p).lower() not in ('nan', '')}
+        pids_a, pids_b = valid(df_a), valid(df_b)
 
-        # MEI Shape Fail Rate = MEI failures / QC Done
-        mei_fail_rate = round((total_mei_fail_events_past / total_qc_done_past * 100), 2) if total_qc_done_past > 0 else 0.0
+        first_a = df_a.groupby('pid')['created_datetime'].min()
+        main_reason = df_a.groupby('pid')['reason_cluster'].agg(lambda x: x.value_counts().index[0])
+        cnt_a, cnt_b = df_a['pid'].value_counts(), df_b['pid'].value_counts()
+        b_times = df_b['mei_datetime'].fillna(df_b['created_datetime']).groupby(df_b['pid']).apply(list).to_dict()
+        bmax = self.df_this['created_datetime'].max() if len(self.df_this) else pd.NaT
+        b_end = (bmax.normalize() + pd.Timedelta(days=1)) if pd.notna(bmax) else pd.Timestamp('2262-01-01')
 
-        # --- Unique PID-based classification (for correction tracking) ---
-        w1_failed_pids = {p for p in set(df_p_mei['pid'].unique()) if pd.notna(p) and str(p).lower() != 'nan' and p != ''}
-        w2_failed_pids = {p for p in set(df_t_mei['pid'].unique()) if pd.notna(p) and str(p).lower() != 'nan' and p != ''}
+        latest_corrections, all_corrections_by_pid = {}, {}
+        if self.df_log is not None and not self.df_log.empty:
+            for pid, g in self.df_log[self.df_log['pid'].isin(pids_a)].groupby('pid'):
+                lo = first_a[pid].normalize() if pd.notna(first_a.get(pid)) else pd.Timestamp.min
+                g = g[(g['timestamp'] >= lo) & (g['timestamp'] < b_end)].sort_values('timestamp')
+                if len(g):
+                    all_corrections_by_pid[pid] = g.to_dict('records')
+                    latest_corrections[pid] = g.iloc[-1].to_dict()
 
-        w2_cutoff = self.df_this['created_datetime'].max() if 'created_datetime' in self.df_this.columns and self.df_this['created_datetime'].notna().any() else pd.Timestamp('2026-08-13')
-
-        latest_corrections = {}
-        all_corrections_by_pid = {}
-
-        if not self.df_log.empty:
-            valid_logs = self.df_log[self.df_log['timestamp'] < w2_cutoff].sort_values('timestamp')
-            for pid, group in valid_logs.groupby('pid'):
-                all_corrections_by_pid[pid] = group.to_dict('records')
-                latest_corrections[pid] = group.iloc[-1].to_dict()
-
-        classified_pids = []
-        counts = {
-            "Corrected": 0,
-            "Recurred": 0,
-            "Pending": 0,
-            "Corrected-unlogged": 0
-        }
-
-        for pid in w1_failed_pids:
-            has_correction = pid in latest_corrections
-            fails_in_w2 = pid in w2_failed_pids
-
-            if has_correction and not fails_in_w2:
-                cat = "Corrected"
-            elif has_correction and fails_in_w2:
-                cat = "Recurred"
-            elif not has_correction and fails_in_w2:
-                cat = "Pending"
+        counts = {"Corrected": 0, "Recurred": 0, "Pending": 0, "Corrected-unlogged": 0}
+        classified = []
+        for pid in pids_a:
+            corr = latest_corrections.get(pid)
+            if corr is not None:
+                fails_after = any(t > corr['timestamp'] for t in b_times.get(pid, []) if pd.notna(t))
+                cat = "Recurred" if fails_after else "Corrected"
             else:
-                cat = "Corrected-unlogged"
-
+                cat = "Pending" if pid in pids_b else "Corrected-unlogged"
             counts[cat] += 1
-
-            w1_rows = df_p_mei[df_p_mei['pid'] == pid]
-            sample_row = w1_rows.iloc[0]
-            corr_info = latest_corrections.get(pid, {})
-
-            p_dev = corr_info.get('PERCENTAGE', None)
-            p_dev_val = float(p_dev) if pd.notna(p_dev) else None
-
-            classified_pids.append({
-                "pid": pid,
-                "classification": cat,
-                "reason_cluster": sample_row['reason_cluster'],
-                "raw_reason": sample_row['reason_qc_fail'],
-                "qc_person_id": sample_row['qc_person_id'],
-                "vendor_invoice_number": sample_row['vendor_invoice_number'],
-                "first_fail_timestamp": str(sample_row['QC_created_date'])[:10],
-                "correction_timestamp": str(corr_info.get('timestamp', 'N/A'))[:10],
-                "done_by": str(corr_info.get('DONE BY', 'N/A')),
-                "percentage_dev": p_dev_val,
+            row = df_a[df_a['pid'] == pid].iloc[0]
+            corr = corr or {}
+            dev = corr.get('PERCENTAGE')
+            classified.append({
+                "pid": pid, "classification": cat, "reason_cluster": main_reason[pid], "raw_reason": row['reason_qc_fail'],
+                "qc_person_id": row['qc_person_id'], "vendor_invoice_number": row['vendor_invoice_number'],
+                "first_fail_timestamp": str(row['QC_created_date'])[:10],
+                "correction_timestamp": str(corr.get('timestamp', 'N/A'))[:10],
+                "done_by": str(corr.get('DONE BY', '') or ''),
+                "percentage_dev": float(dev) if dev is not None and pd.notna(dev) else None,
                 "history_corrections_count": len(all_corrections_by_pid.get(pid, [])),
-                "fail_event_count": len(w1_rows)
+                "fail_event_count": int(cnt_a.get(pid, 0)), "fail_events_b": int(cnt_b.get(pid, 0)),
             })
 
-        total_w1_fails_pids = len(w1_failed_pids)
-        weekly_correction_pct = round((counts["Corrected"] / total_w1_fails_pids * 100), 2) if total_w1_fails_pids > 0 else 0.0
+        n_a = len(pids_a)
+        ba, bb = df_a['reason_cluster'].map(self._shape_bucket).value_counts(), df_b['reason_cluster'].map(self._shape_bucket).value_counts()
+        pareto = [{"reason": k, "a": int(ba.get(k, 0)), "b": int(bb.get(k, 0))}
+                  for k in sorted(set(ba.index) | set(bb.index), key=lambda k: -(ba.get(k, 0) + bb.get(k, 0)))]
 
-        # --- EVENT-BASED Pareto (failure events, not unique PIDs) ---
-        pareto_data = self._build_event_pareto(df_p_mei)
+        sa, sb = df_a['shift_bucket'].value_counts(), df_b['shift_bucket'].value_counts()
+        shift = []
+        for sh in self.SHIFT_ORDER:
+            ea, eb = int(sa.get(sh, 0)), int(sb.get(sh, 0))
+            da, db = qa.get('by_shift', {}).get(sh, 0), qb.get('by_shift', {}).get(sh, 0)
+            if ea or eb or da or db:
+                shift.append({"shift": sh, "events_a": ea, "events_b": eb, "qc_a": da, "qc_b": db,
+                              "rate_a": rate(ea, da), "rate_b": rate(eb, db)})
 
-        # --- Machine Problem Table ---
-        machine_table = self._build_machine_table(df_p_mei, df_t_mei, latest_corrections, w2_failed_pids, total_qc_done_past)
-
-        # --- Machine x Issue Heatmap ---
-        heatmap_machine_issue = self._build_heatmap(df_p_mei, 'qc_person_id', 'reason_cluster')
-
-        # --- Correction Effectiveness ---
-        correction_effectiveness = {
-            "corrected": counts["Corrected"],
-            "recurred": counts["Recurred"],
-            "pending": counts["Pending"],
-            "corrected_unlogged": counts["Corrected-unlogged"]
-        }
-
-        # --- Shift Drift (event-based) ---
-        shift_drift_data = self._build_shift_drift(df_p_mei)
+        action = sorted([c for c in classified if c['classification'] in ('Recurred', 'Pending')],
+                        key=lambda c: (-c['fail_events_b'], -c['fail_event_count']))[:15]
 
         return {
             "summary": {
-                "mei_fail_rate": float(mei_fail_rate),
-                "total_mei_fail_events": int(total_mei_fail_events_past),
-                "total_qc_done": int(total_qc_done_past),
-                "total_w1_fails": int(total_w1_fails_pids),
-                "corrected": counts["Corrected"],
-                "recurred": counts["Recurred"],
-                "pending": counts["Pending"],
-                "corrected_unlogged": counts["Corrected-unlogged"],
-                "weekly_correction_pct": float(weekly_correction_pct),
-                "week_past_label": self.week_past_label,
-                "week_this_label": self.week_this_label,
-                "row_cap_warning": self.row_cap_warning
+                "fail_rate_a": rate(ev_a, qa.get('total', 0)), "fail_rate_b": rate(ev_b, qb.get('total', 0)),
+                "events_a": ev_a, "events_b": ev_b, "qc_done_a": qa.get('total', 0), "qc_done_b": qb.get('total', 0),
+                "pids_a": n_a, "pids_b": len(pids_b),
+                "mei_fail_rate": rate(ev_a, qa.get('total', 0)), "total_mei_fail_events": ev_a, "total_qc_done": qa.get('total', 0),
+                "total_w1_fails": n_a, "corrected": counts["Corrected"], "recurred": counts["Recurred"],
+                "pending": counts["Pending"], "corrected_unlogged": counts["Corrected-unlogged"],
+                "weekly_correction_pct": rate(counts["Corrected"], n_a),
+                "week_past_label": self.week_past_label, "week_this_label": self.week_this_label,
+                "row_cap_warning": self.row_cap_warning, "row_cap_notes": self.row_cap_notes,
             },
-            "classified_pids": classified_pids,
-            "pareto": pareto_data,
-            "machine_table": machine_table,
-            "heatmap_machine_issue": heatmap_machine_issue,
-            "correction_effectiveness": correction_effectiveness,
-            "shift_drift": shift_drift_data
+            "classified_pids": classified,
+            "pareto": pareto,
+            "shift_drift": shift,
+            "correction_effectiveness": {"corrected": counts["Corrected"], "recurred": counts["Recurred"],
+                                         "pending": counts["Pending"], "corrected_unlogged": counts["Corrected-unlogged"]},
+            "action_list": action,
         }
-
-    def _build_event_pareto(self, df_mei_fails):
-        """Build Pareto from failure EVENTS (rows), not unique PIDs."""
-        if df_mei_fails.empty:
-            return []
-
-        # Map each cluster reason to a normalized shape bucket for the Pareto
-        shape_bucket_map = {}
-        for cluster_reason in df_mei_fails['reason_cluster'].unique():
-            upper = cluster_reason.upper()
-            if 'SMALL' in upper and 'FITTER' not in upper:
-                shape_bucket_map[cluster_reason] = "SMALL SIZE (Machine)"
-            elif 'BIG' in upper:
-                shape_bucket_map[cluster_reason] = "BIG SIZE (Machine)"
-            elif 'WRONG SHAPE' in upper or 'W/SHAPE' in upper:
-                shape_bucket_map[cluster_reason] = "WRONG SHAPE (Machine)"
-            elif 'SLIP' in upper:
-                shape_bucket_map[cluster_reason] = "LENS SLIP (Machine)"
-            else:
-                shape_bucket_map[cluster_reason] = cluster_reason
-
-        reason_counts = {}
-        for _, row in df_mei_fails.iterrows():
-            bucket = shape_bucket_map.get(row['reason_cluster'], row['reason_cluster'])
-            reason_counts[bucket] = reason_counts.get(bucket, 0) + 1
-
-        sorted_reasons = sorted(reason_counts.items(), key=lambda x: x[1], reverse=True)
-        total_fails = sum(reason_counts.values())
-
-        pareto = []
-        cum_count = 0
-        for reason, count in sorted_reasons:
-            cum_count += count
-            pct = round((count / total_fails * 100), 2) if total_fails > 0 else 0.0
-            cum_pct = round((cum_count / total_fails * 100), 2) if total_fails > 0 else 0.0
-            pareto.append({
-                "reason": reason,
-                "count": int(count),
-                "percentage": float(pct),
-                "cumulative_pct": float(cum_pct)
-            })
-        return pareto
-
-    def _build_machine_table(self, df_p_mei, df_t_mei, latest_corrections, w2_failed_pids, total_qc_done):
-        """Build Machine Problem Table: Machine | Failures | Fail Rate | Top Issue | Recurred."""
-        if df_p_mei.empty:
-            return []
-
-        machines = {}
-        for machine_id, group in df_p_mei.groupby('qc_person_id'):
-            fail_count = len(group)
-
-            # Get total QC done by this machine for fail rate calc
-            machine_total = len(self.df_past[self.df_past['qc_person_id'] == machine_id])
-            fail_rate = round((fail_count / machine_total * 100), 2) if machine_total > 0 else 0.0
-
-            # Top issue
-            top_issue = group['reason_cluster'].value_counts().index[0] if not group['reason_cluster'].value_counts().empty else 'N/A'
-
-            # Recurred count for this machine
-            machine_pids = set(group['pid'].unique())
-            recurred = 0
-            for pid in machine_pids:
-                has_corr = pid in latest_corrections
-                still_fails = pid in w2_failed_pids
-                if has_corr and still_fails:
-                    recurred += 1
-
-            machines[machine_id] = {
-                "machine": machine_id,
-                "failures": int(fail_count),
-                "fail_rate": float(fail_rate),
-                "machine_qc_total": int(machine_total),
-                "top_issue": top_issue,
-                "recurred": int(recurred)
-            }
-
-        result = sorted(machines.values(), key=lambda x: x["failures"], reverse=True)
-        return result[:20]
-
-    def _build_heatmap(self, df_subset, col_x, col_y):
-        if df_subset.empty:
-            return {"x": [], "y": [], "z": []}
-
-        ct = pd.crosstab(df_subset[col_y], df_subset[col_x])
-        return {
-            "x": [str(c) for c in ct.columns],
-            "y": [str(r) for r in ct.index],
-            "z": ct.values.tolist()
-        }
-
-    def _build_shift_drift(self, df_p_mei):
-        if df_p_mei.empty:
-            return []
-        shifts = {}
-        for _, row in df_p_mei.iterrows():
-            sb = row.get('shift_bucket', 'Day Shift')
-            rc = row.get('reason_cluster', 'Other')
-            if sb not in shifts:
-                shifts[sb] = {"shift": sb, "total_fails": 0, "reasons": {}}
-            shifts[sb]["total_fails"] += 1
-            shifts[sb]["reasons"][rc] = shifts[sb]["reasons"].get(rc, 0) + 1
-
-        order = ['Morning Shift (06:00-14:00)', 'Evening Shift (14:00-22:00)', 'Night Shift (22:00-06:00)', 'Day Shift', 'Unknown']
-        result = []
-        for s in order:
-            if s in shifts:
-                result.append({
-                    "shift": s,
-                    "total_fails": shifts[s]["total_fails"],
-                    "reasons": shifts[s]["reasons"]
-                })
-        return result
 
     # ==========================================
     # DATA EXPLORER HELPER METHODS

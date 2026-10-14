@@ -3,6 +3,7 @@ let globalData = null;
 // Explorer state management
 const expClassState = { page: 1, limit: 50, search: "", sort_by: "pid", sort_order: "asc", status: "all" };
 const expFailsState = { page: 1, limit: 50, search: "", sort_by: "QC_created_date", sort_order: "desc", period: "all" };
+const expMasterState = { page: 1, limit: 50, search: "", sort_by: "date", sort_order: "desc", type: "all", date_from: "", date_to: "" };
 const expCorrState = { page: 1, limit: 50, search: "", sort_by: "timestamp", sort_order: "desc" };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -64,6 +65,9 @@ function updateLabels(data) {
     if (data.week_this_label) document.getElementById('lbl-this-period').innerText = data.week_this_label;
 
     const banner = document.getElementById('row-cap-warning-banner');
+    if (data.row_cap_notes && data.row_cap_notes.length) {
+        banner.querySelector('.warning-text').innerHTML = `<strong>Warning:</strong> ${data.row_cap_notes.map(escHtml).join(' ')} Re-export in smaller date ranges to get complete numbers.`;
+    }
     if (data.row_cap_warning) {
         banner.classList.remove('hidden');
     } else {
@@ -119,6 +123,10 @@ async function uploadFile(file, apiUrl, labelEl) {
 // METRICS FETCH & RENDER
 // =====================
 async function fetchMetrics() {
+    try { await fetchMetricsCore(); } finally { refreshImpactIfOpen(); }
+}
+
+async function fetchMetricsCore() {
     try {
         const res = await fetch('/api/metrics');
         if (!res.ok) throw new Error("Error fetching metrics");
@@ -127,139 +135,87 @@ async function fetchMetrics() {
 
         renderKPIs(data.summary);
         renderParetoChart(data.pareto);
-        renderMachineTable(data.machine_table);
-        renderHeatmap(data.heatmap_machine_issue);
-        renderCorrectionEffectiveness(data.correction_effectiveness, data.summary);
         renderShiftDriftChart(data.shift_drift);
+        renderCorrectionEffectiveness(data.correction_effectiveness, data.summary);
+        renderActionList(data.action_list);
     } catch (e) {
         console.error("Fetch metrics error:", e);
     }
 }
 
+const PLOT_BASE = {
+    font: { family: 'Inter', color: '#8b949e', size: 11 },
+    paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+    margin: { l: 45, r: 15, t: 10, b: 70 },
+    legend: { orientation: 'h', y: -0.25, font: { color: '#f0f2f5', size: 11 } },
+    yaxis: { gridcolor: 'rgba(255,255,255,0.08)', zeroline: false },
+    barmode: 'group'
+};
+const COLOR_A = '#8b949e', COLOR_B = '#00b0ff';
+
+function changeText(a, b, unit, pct) {
+    if (!a && !b) return '';
+    const d = b - a;
+    const arrow = d > 0 ? '▲' : (d < 0 ? '▼' : '=');
+    return pct && a ? `${arrow} ${Math.abs(d / a * 100).toFixed(0)}%` : `${arrow} ${Math.abs(d).toFixed(2)}${unit}`;
+}
+
 function renderKPIs(s) {
-    document.getElementById('kpi-fail-rate').innerText = `${s.mei_fail_rate}%`;
-    document.getElementById('kpi-machine-failures').innerText = s.total_mei_fail_events.toLocaleString();
+    document.getElementById('kpi-fail-rate').innerText = `${s.fail_rate_b}%`;
+    document.getElementById('kpi-fail-rate-desc').innerText =
+        `A: ${s.fail_rate_a}% (${changeText(s.fail_rate_a, s.fail_rate_b, ' pts')}) · ${s.events_b.toLocaleString()} of ${s.qc_done_b.toLocaleString()} QC'd`;
+    document.getElementById('kpi-machine-failures').innerText = s.events_b.toLocaleString();
+    document.getElementById('kpi-events-desc').innerText =
+        `A: ${s.events_a.toLocaleString()} (${changeText(s.events_a, s.events_b, '', true)}) · ${s.pids_b} PIDs in B`;
+    document.getElementById('kpi-corrected').innerText = (s.corrected || 0).toLocaleString();
     document.getElementById('kpi-recurred').innerText = s.recurred.toLocaleString();
     document.getElementById('kpi-pending').innerText = s.pending.toLocaleString();
 }
 
 function renderParetoChart(pareto) {
-    if (!pareto || pareto.length === 0) return;
-    const reasons = pareto.map(p => p.reason);
-    const counts = pareto.map(p => p.count);
-    const cumPcts = pareto.map(p => p.cumulative_pct);
-
-    const traceBar = {
-        x: reasons, y: counts, name: 'Fail Events', type: 'bar',
-        marker: { color: ['#00b0ff', '#7c4dff', '#e040fb', '#ffee58', '#ff1744', '#00e676'].slice(0, reasons.length) }
-    };
-    const traceLine = {
-        x: reasons, y: cumPcts, name: 'Cumulative %', type: 'scatter',
-        mode: 'lines+markers', yaxis: 'y2',
-        line: { color: '#ffee58', width: 3 }, marker: { size: 7, color: '#ffee58' }
-    };
-    const layout = {
-        font: { family: 'Inter', color: '#8b949e', size: 11 },
-        paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
-        margin: { l: 50, r: 50, t: 20, b: 80 },
-        showlegend: true,
-        legend: { orientation: 'h', y: 1.15, font: { color: '#f0f2f5' } },
-        xaxis: { tickangle: -15, gridcolor: 'rgba(255,255,255,0.05)' },
-        yaxis: { title: 'Failure Events', gridcolor: 'rgba(255,255,255,0.05)' },
-        yaxis2: { title: 'Cumulative %', overlaying: 'y', side: 'right', range: [0, 105], showgrid: false }
-    };
-    Plotly.newPlot('chart-pareto', [traceBar, traceLine], layout, { responsive: true });
-
-    document.getElementById('chart-pareto').on('plotly_click', (d) => {
-        if (d.points && d.points[0]) openDrilldown('pareto', d.points[0].x);
-    });
+    const x = pareto.map(p => p.reason);
+    const bar = (name, key, color) => ({ x, y: pareto.map(p => p[key]), name, type: 'bar', marker: { color },
+        text: pareto.map(p => p[key]), textposition: 'outside', textfont: { color: '#f0f2f5' } });
+    Plotly.newPlot('chart-pareto', [bar('Period A', 'a', COLOR_A), bar('Period B', 'b', COLOR_B)],
+        { ...PLOT_BASE, yaxis: { ...PLOT_BASE.yaxis, title: 'Failed lenses' } }, { responsive: true, displayModeBar: false });
 }
 
-function renderMachineTable(machines) {
-    const tbody = document.getElementById('machine-table-body');
-    tbody.innerHTML = '';
-    if (!machines || machines.length === 0) return;
-
-    machines.forEach(m => {
-        const tr = document.createElement('tr');
-        tr.className = 'machine-row';
-        tr.style.cursor = 'pointer';
-        const failRateClass = m.fail_rate > 5 ? 'text-red' : m.fail_rate > 2 ? 'text-yellow' : 'text-green';
-        const recurredClass = m.recurred > 0 ? 'text-red' : 'text-green';
-        tr.innerHTML = `
-            <td><strong class="text-blue">${m.machine}</strong></td>
-            <td><strong>${m.failures}</strong></td>
-            <td><span class="${failRateClass}">${m.fail_rate}%</span></td>
-            <td>${m.top_issue}</td>
-            <td><span class="${recurredClass}">${m.recurred}</span></td>
-        `;
-        tr.addEventListener('click', () => openDrilldown('machine', m.machine));
-        tbody.appendChild(tr);
+function renderShiftDriftChart(shift) {
+    const x = shift.map(s => s.shift.replace(/ Shift/, '').replace(/ \(.*\)/, '') + (s.shift.includes('(') ? '<br>' + s.shift.match(/\((.*)\)/)[1] : ''));
+    const bar = (name, rk, ek, qk, color) => ({
+        x, y: shift.map(s => s[rk]), name, type: 'bar', marker: { color },
+        text: shift.map(s => s[rk] + '%'), textposition: 'outside', textfont: { color: '#f0f2f5' },
+        customdata: shift.map(s => [s[ek], s[qk]]), hovertemplate: '%{y}%  (%{customdata[0]} fails of %{customdata[1]} QC\'d)<extra>' + name + '</extra>'
     });
-}
-
-function renderHeatmap(heatData) {
-    if (!heatData || !heatData.x || heatData.x.length === 0) return;
-
-    const trace = {
-        x: heatData.x, y: heatData.y, z: heatData.z,
-        type: 'heatmap', colorscale: [
-            [0, '#0a0b12'], [0.25, '#1a237e'], [0.5, '#7c4dff'], [0.75, '#e040fb'], [1, '#ff1744']
-        ],
-        showscale: true,
-        colorbar: { title: 'Count', titlefont: { color: '#8b949e' }, tickfont: { color: '#8b949e' } }
-    };
-    const layout = {
-        font: { family: 'Inter', color: '#8b949e', size: 11 },
-        paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
-        margin: { l: 200, r: 40, t: 20, b: 80 },
-        xaxis: { tickangle: -30 }, yaxis: {}
-    };
-    Plotly.newPlot('chart-heatmap', [trace], layout, { responsive: true });
+    Plotly.newPlot('chart-shift-drift', [bar('Period A', 'rate_a', 'events_a', 'qc_a', COLOR_A), bar('Period B', 'rate_b', 'events_b', 'qc_b', COLOR_B)],
+        { ...PLOT_BASE, yaxis: { ...PLOT_BASE.yaxis, title: 'Fail rate %' } }, { responsive: true, displayModeBar: false });
 }
 
 function renderCorrectionEffectiveness(eff, summary) {
-    const labels = ['Corrected', 'Recurred', 'Pending', 'Unlogged'];
-    const values = [eff.corrected, eff.recurred, eff.pending, eff.corrected_unlogged];
-    const colors = ['#00e676', '#ff1744', '#ffeb3b', '#e040fb'];
-
     const trace = {
-        labels: labels, values: values, type: 'pie', hole: 0.55,
-        marker: { colors: colors },
-        textinfo: 'label+value', textfont: { color: '#f0f2f5', size: 12 },
-        hoverinfo: 'label+percent+value'
+        labels: ['Corrected', 'Recurred', 'Pending', 'Unlogged'],
+        values: [eff.corrected, eff.recurred, eff.pending, eff.corrected_unlogged],
+        type: 'pie', hole: 0.55, marker: { colors: ['#00e676', '#ff1744', '#ffeb3b', '#e040fb'] },
+        textinfo: 'label+value', textfont: { color: '#f0f2f5', size: 12 }, hoverinfo: 'label+percent+value'
     };
-    const layout = {
-        font: { family: 'Inter', color: '#8b949e', size: 11 },
-        paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
-        margin: { l: 20, r: 20, t: 20, b: 20 },
-        showlegend: true,
+    Plotly.newPlot('chart-correction-eff', [trace], {
+        font: PLOT_BASE.font, paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+        margin: { l: 20, r: 20, t: 10, b: 10 }, showlegend: true,
         legend: { orientation: 'h', y: -0.1, font: { color: '#f0f2f5', size: 10 } },
-        annotations: [{
-            text: `${summary.weekly_correction_pct}%<br>Fixed`, showarrow: false,
-            font: { size: 18, color: '#00e676', family: 'Outfit' }
-        }]
-    };
-    Plotly.newPlot('chart-correction-eff', [trace], layout, { responsive: true });
+        annotations: [{ text: `${summary.weekly_correction_pct}%<br>Fixed`, showarrow: false, font: { size: 18, color: '#00e676', family: 'Outfit' } }]
+    }, { responsive: true, displayModeBar: false });
 }
 
-function renderShiftDriftChart(shiftData) {
-    if (!shiftData || shiftData.length === 0) return;
-    const shifts = shiftData.map(s => s.shift.split(' ')[0]);
-    const totalFails = shiftData.map(s => s.total_fails);
-
-    const trace = {
-        x: shifts, y: totalFails, type: 'bar',
-        marker: { color: ['#00b0ff', '#7c4dff', '#e040fb', '#ffee58'] }
-    };
-    const layout = {
-        font: { family: 'Inter', color: '#8b949e', size: 11 },
-        paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
-        margin: { l: 50, r: 20, t: 20, b: 40 },
-        yaxis: { title: 'Fail Events', gridcolor: 'rgba(255,255,255,0.05)' },
-        xaxis: { title: 'Shift' }
-    };
-    Plotly.newPlot('chart-shift-drift', [trace], layout, { responsive: true });
+function renderActionList(list) {
+    document.getElementById('action-table-body').innerHTML = (list || []).map(c => `
+        <tr>
+            <td><strong class="cursor-pointer text-blue" onclick="quickLookupPID('${escHtml(c.pid)}')">${escHtml(c.pid)}</strong></td>
+            <td><span class="tag tag-${escHtml(c.classification)}">${escHtml(c.classification)}</span></td>
+            <td>${c.fail_event_count}</td><td>${c.fail_events_b}</td>
+            <td>${escHtml(c.reason_cluster)}</td>
+            <td>${c.correction_timestamp && c.correction_timestamp !== 'N/A' ? escHtml(c.correction_timestamp) : '-'}</td>
+            <td>${escHtml(c.done_by) || '-'}</td>
+        </tr>`).join('') || '<tr><td colspan="7" class="text-center text-muted">No Recurred or Pending PIDs</td></tr>';
 }
 
 // =====================
@@ -300,28 +256,31 @@ async function openDrilldown(catType, val1) {
 // NAVIGATION
 // =====================
 function setupMainTabs() {
-    const btnAnalytics = document.getElementById('tab-btn-analytics');
-    const btnExplorer = document.getElementById('tab-btn-explorer');
-    const viewAnalytics = document.getElementById('analytics-view');
-    const viewExplorer = document.getElementById('explorer-view');
-
-    btnAnalytics.addEventListener('click', () => {
-        btnAnalytics.classList.add('active');
-        btnExplorer.classList.remove('active');
-        viewAnalytics.classList.remove('hidden');
-        viewExplorer.classList.add('hidden');
+    const tabs = [
+        { btn: 'tab-btn-analytics', view: 'analytics-view' },
+        { btn: 'tab-btn-explorer', view: 'explorer-view' },
+        { btn: 'tab-btn-impact', view: 'impact-view', action: () => fetchImpact() }
+    ];
+    tabs.forEach(t => {
+        document.getElementById(t.btn).addEventListener('click', () => {
+            tabs.forEach(o => {
+                document.getElementById(o.btn).classList.toggle('active', o === t);
+                document.getElementById(o.view).classList.toggle('hidden', o !== t);
+            });
+            if (t.action) t.action();
+        });
     });
-
-    btnExplorer.addEventListener('click', () => {
-        btnExplorer.classList.add('active');
-        btnAnalytics.classList.remove('active');
-        viewExplorer.classList.remove('hidden');
-        viewAnalytics.classList.add('hidden');
-    });
+    document.getElementById('impact-search').addEventListener('input', () => renderImpactTable());
+    document.getElementById('impact-status').addEventListener('change', () => renderImpactTable());
+    document.getElementById('btn-impact-save').addEventListener('click', saveImpactSettings);
+    document.getElementById('btn-impact-log').addEventListener('click', () => openManualCorrectionModal());
+    document.getElementById('btn-impact-check').addEventListener('click', checkPidInvoice);
+    document.getElementById('impact-check-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') checkPidInvoice(); });
 }
 
 function setupExplorerSubtabs() {
     const subtabs = [
+        { btn: 'subtab-master', panel: 'exp-panel-master', action: refreshMaster },
         { btn: 'subtab-pid', panel: 'exp-panel-pid' },
         { btn: 'subtab-classifications', panel: 'exp-panel-classifications', action: fetchExplorerClassifications },
         { btn: 'subtab-clusters', panel: 'exp-panel-clusters', action: fetchExplorerClusters },
@@ -356,6 +315,14 @@ function setupExplorerControls() {
     bindExplorerTableControls('exp-fails', expFailsState, fetchExplorerFails, [], 'exp-fails-period-filter', 'period');
     // Corrections
     bindExplorerTableControls('exp-corr', expCorrState, fetchExplorerCorrections);
+    // Master database
+    bindExplorerTableControls('exp-master', expMasterState, fetchExplorerMaster, [], 'exp-master-type', 'type');
+    document.getElementById('exp-master-from').addEventListener('change', (e) => { expMasterState.date_from = e.target.value; expMasterState.page = 1; fetchExplorerMaster(); });
+    document.getElementById('exp-master-to').addEventListener('change', (e) => { expMasterState.date_to = e.target.value; expMasterState.page = 1; fetchExplorerMaster(); });
+    document.getElementById('btn-master-export').addEventListener('click', () => {
+        const p = expMasterState;
+        window.location = `/api/explorer/master/export?search=${encodeURIComponent(p.search)}&type=${p.type}&date_from=${p.date_from}&date_to=${p.date_to}&sort_order=asc`;
+    });
 }
 
 function bindExplorerTableControls(prefix, stateObj, fetchFn, sortableCols = [], filterElId = null, filterProp = null) {
@@ -470,7 +437,7 @@ async function fetchPIDHistory(pid) {
                     <td>${c.issue_raw}</td>
                     <td><small>${beforeStr}</small></td>
                     <td><small>${afterStr}</small></td>
-                    <td>${c.done_by}</td>
+                    <td>${escHtml(c.done_by) || '-'}</td>
                     <td>${actionHtml}</td>
                 `;
                 corrTbody.appendChild(tr);
@@ -656,7 +623,7 @@ async function fetchExplorerCorrections() {
                 <td>${normBadge}</td>
                 <td>${beforeCell}</td>
                 <td>${afterCell}</td>
-                <td>${escHtml(r.done_by)}</td>
+                <td>${escHtml(r.done_by) || '-'}</td>
                 <td>${actionCell}</td>
             `;
             tbody.appendChild(tr);
@@ -664,6 +631,222 @@ async function fetchExplorerCorrections() {
     } catch (e) {
         console.error("Fetch corrections error:", e);
     }
+}
+
+// =====================
+// EXPLORER: MASTER DATABASE (all QC fails + all corrections, first entry -> last)
+// =====================
+function refreshMaster() { fetchMasterSummary(); fetchExplorerMaster(); }
+
+async function fetchMasterSummary() {
+    try {
+        const s = await (await fetch('/api/explorer/master/summary')).json();
+        const card = (title, value, desc, cls = '') =>
+            `<div class="glass-card kpi-card"><div class="kpi-title">${title}</div><div class="kpi-value ${cls}">${escHtml(value ?? '-')}</div><div class="kpi-desc">${escHtml(desc || '')}</div></div>`;
+        document.getElementById('master-summary').innerHTML =
+            card('First entry', s.first_entry, 'Earliest record in the database', 'text-blue') +
+            card('Last entry', s.last_entry, 'Most recent record', 'text-blue') +
+            card('Total records', Number(s.total_records).toLocaleString(), `${Number(s.fails).toLocaleString()} QC fails + ${Number(s.corrections).toLocaleString()} corrections`) +
+            card('QC fails', `${s.first_fail || '-'} → ${s.last_fail || '-'}`, 'Date span of QC fail data', 'text-red') +
+            card('Corrections', `${s.first_correction || '-'} → ${s.last_correction || '-'}`, 'Date span of correction entries', 'text-green') +
+            card('Last updated', s.last_updated || '-', 'Archive / manual log file modified');
+
+        const w = document.getElementById('master-warnings');
+        if (s.warnings && s.warnings.length) {
+            w.innerHTML = s.warnings.map(x => `<div class="master-warning-item">⚠ ${escHtml(x)}</div>`).join('');
+            w.classList.remove('hidden');
+        } else {
+            w.classList.add('hidden');
+        }
+
+        document.getElementById('master-sources-count').textContent = `(${(s.sources || []).length})`;
+        document.getElementById('master-sources-tbody').innerHTML = (s.sources || []).map(x => `
+            <tr><td>${escHtml(x.source_label)}</td><td>${escHtml(x.loaded_as)}</td><td>${x.rows_in_file}</td>
+            <td>${x.rows_added}</td><td>${escHtml(x.first_date)}</td><td>${escHtml(x.last_date)}</td><td>${escHtml(x.ingested_at)}</td></tr>`).join('')
+            || '<tr><td colspan="7" class="text-center text-muted">No sources recorded yet</td></tr>';
+    } catch (e) {
+        console.error('Master summary error:', e);
+    }
+}
+
+async function fetchExplorerMaster() {
+    const p = expMasterState;
+    const url = `/api/explorer/master?page=${p.page}&limit=${p.limit}&search=${encodeURIComponent(p.search)}&type=${p.type}&date_from=${p.date_from}&date_to=${p.date_to}&sort_order=${p.sort_order}`;
+    try {
+        const data = await (await fetch(url)).json();
+        document.getElementById('exp-master-page-info').textContent = `Page ${data.page}/${data.total_pages} (${data.total_rows.toLocaleString()} records)`;
+        document.getElementById('exp-master-page-num').textContent = data.page;
+        const tbody = document.getElementById('exp-master-tbody');
+        tbody.innerHTML = data.data.map(r => `
+            <tr>
+                <td><span class="${r.type === 'QC Fail' ? 'tag-fail' : 'tag-corr'}">${escHtml(r.type)}</span></td>
+                <td>${escHtml(r.date)}</td>
+                <td><strong class="cursor-pointer text-blue" onclick="quickLookupPID('${escHtml(r.pid)}')">${escHtml(r.pid_invoice)}</strong></td>
+                <td>${escHtml(r.reason)}</td>
+                <td>${escHtml(r.who)}</td>
+                <td><small>${escHtml(r.detail)}</small></td>
+                <td><small>${escHtml(r.source)}</small></td>
+            </tr>`).join('') || '<tr><td colspan="7" class="text-center text-muted">No records match</td></tr>';
+    } catch (e) {
+        console.error('Fetch master error:', e);
+    }
+}
+
+// =====================
+// CORRECTION IMPACT
+// =====================
+let impactData = null;
+const nv = (v) => (v === null || v === undefined || (typeof v === 'number' && isNaN(v))) ? '-' : v;
+const rateTxt = (o) => (o && o.rate !== null && o.rate !== undefined) ? `${o.rate}% <small>(${o.fails}/${o.qc_done})</small>` : '<span class="text-muted">-</span>';
+const fdate = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '-';
+
+async function fetchImpact() {
+    try {
+        const res = await fetch('/api/impact');
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Failed');
+        impactData = await res.json();
+        renderImpact();
+    } catch (e) {
+        document.getElementById('impact-cards').innerHTML = `<div class="master-warning-item">Could not load impact: ${escHtml(e.message)}</div>`;
+    }
+}
+
+function renderImpact() {
+    const d = impactData, s = d.summary, c = s.counts;
+    const judged = c['Fixed'] + c['Improved'] + c['Still failing'];
+    const pct = (n) => judged ? ` (${Math.round(n / judged * 100)}% of judged)` : '';
+    const card = (t, v, desc, cls = '') => `<div class="glass-card kpi-card"><div class="kpi-title">${t}</div><div class="kpi-value ${cls}">${v}</div><div class="kpi-desc">${desc}</div></div>`;
+    document.getElementById('impact-cards').innerHTML =
+        card('Corrections', s.total - c['No correction done'], `with dimensions logged · ${c['No correction done']} flagged "no correction"`) +
+        card('Fixed', c['Fixed'], 'No MEI shape fail since the correction' + pct(c['Fixed']), 'text-green') +
+        card('Improved', c['Improved'], 'Fail rate at least halved' + pct(c['Improved']), 'text-blue') +
+        card('Still failing', c['Still failing'], 'Failing at a similar rate' + pct(c['Still failing']), 'text-red') +
+        card('Not tested yet', c['Not tested yet'], `Fewer than ${d.settings.min_volume} lenses QC'd since the correction`) +
+        card('Needs a correction', d.pending.count, `PID.Invoices with ${d.settings.fail_threshold}+ fails and no correction`, 'text-red');
+
+    const warn = [...(d.row_cap_notes || [])];
+    const cov = d.coverage || {};
+    const covTxt = Object.entries(cov).map(([k, v]) => `${k}: ${v.qc_done.toLocaleString()} lenses QC'd, cut ${fdate(v.cut_from)} - ${fdate(v.cut_to)} (most between ${fdate(v.bulk_from)} and ${fdate(v.bulk_to)})`).join(' &nbsp;|&nbsp; ');
+    const w = document.getElementById('impact-warnings');
+    if (warn.length) { w.innerHTML = warn.map(x => `<div class="master-warning-item">⚠ ${escHtml(x)}</div>`).join(''); w.classList.remove('hidden'); } else { w.classList.add('hidden'); }
+    const ob = d.observed || {};
+    document.getElementById('impact-coverage').innerHTML = `<strong>QC exports cover lenses QC'd ${fdate(ob.from)} - ${fdate(ob.to)}.</strong> A correction is judged only on lenses cut after its date and not before ${fdate(ob.from)}, because lenses cut earlier are only partly in the exports.<br><strong>All QC'd lenses by cut date:</strong> ${covTxt}`;
+    renderFindings(d);
+
+    const p = s.pooled;
+    document.getElementById('impact-pooled').innerHTML =
+        `<tr><td>Before correction <small>(sheet stats, ${p.before_n} corrections)</small></td><td>${p.before.fails}</td><td>${p.before.qc_done}</td><td><strong>${nv(p.before.rate)}%</strong></td></tr>` +
+        `<tr><td>After, Period A QC data</td><td>${p.after_a.fails}</td><td>${p.after_a.qc_done}</td><td><strong>${nv(p.after_a.rate)}%</strong></td></tr>` +
+        `<tr><td>After, Period B QC data</td><td>${p.after_b.fails}</td><td>${p.after_b.qc_done}</td><td><strong>${nv(p.after_b.rate)}%</strong></td></tr>`;
+
+    document.getElementById('impact-windows').innerHTML = d.windows.map(x => `<tr><td>${escHtml(x.sheet)}${x.overridden ? ' <span class="tag-corr">edited</span>' : ''}</td>
+        <td><input type="date" class="select-input" data-norm="${escHtml(x.norm)}" data-k="start" value="${x.start}" /></td>
+        <td><input type="date" class="select-input" data-norm="${escHtml(x.norm)}" data-k="end" value="${x.end}" /></td></tr>`).join('');
+    document.getElementById('impact-min-volume').value = d.settings.min_volume;
+    document.getElementById('impact-threshold').value = d.settings.fail_threshold;
+
+    document.getElementById('impact-pending-sub').innerText = `${d.pending.count} PID.Invoices; showing the ${d.pending.rows.length} with the most failures.`;
+    document.getElementById('impact-pending').innerHTML = d.pending.rows.map(r => `<tr>
+        <td><strong class="cursor-pointer text-blue" onclick="quickLookupPID('${escHtml(r.key)}')">${escHtml(r.key)}</strong></td>
+        <td>${r.fails_a}</td><td>${r.fails_b}</td><td>${nv(r.rate)}%</td>
+        <td><small>${r.in_lists.map(l => escHtml(l.list) + ': ' + escHtml(l.status)).join(', ') || '-'}</small></td></tr>`).join('') || '<tr><td colspan="5" class="text-center text-muted">None</td></tr>';
+
+    document.getElementById('impact-dims').innerHTML = Object.entries(s.dim_stats).map(([k, v]) =>
+        `<tr><td>${escHtml(k)}</td><td>${v.n}</td><td>${nv(v.mean_shift)}</td><td>${nv(v.mean_abs_shift)}</td></tr>`).join('');
+    const grp = (label, arr) => arr.map(g => `<tr><td>${label}: ${escHtml(g.name)}</td><td>${g.n}</td><td>${g.fixed}</td><td>${g.improved}</td><td>${g.still_failing}</td><td>${nv(g.avg_deviation_pct)}</td></tr>`).join('');
+    document.getElementById('impact-groups').innerHTML = grp('Issue', s.by_issue) + grp('Person', s.by_person);
+
+    document.getElementById('impact-lists-count').innerText = `(${d.list_checks.length})`;
+    document.getElementById('impact-lists').innerHTML = d.list_checks.map(l => `<tr><td>${escHtml(l.list)}</td><td>${l.keys}</td><td>${l.marked_done}</td><td>${l.pending}</td><td>${l.other_status}</td>
+        <td>${l.corrected_then_failing_again.map(x => `${escHtml(x.from_sheet.trim())}: <strong>${x.count}</strong> of ${l.corrected_sheet_sizes[x.from_sheet]}`).join('<br>') || '-'}</td>
+        <td>${Object.entries(l.repeat_from_earlier_lists).map(([k, v]) => `${escHtml(k)}: <strong>${v}</strong>`).join('<br>') || '-'}</td></tr>`).join('');
+    renderImpactTable();
+}
+
+function refreshImpactIfOpen() {
+    impactData = null;
+    const v = document.getElementById('impact-view');
+    if (v && !v.classList.contains('hidden')) fetchImpact();
+}
+
+function renderFindings(d) {
+    const s = d.summary, c = s.counts, p = s.pooled, out = [];
+    const judged = c['Fixed'] + c['Improved'] + c['Still failing'];
+    const pc = (n, t) => t ? Math.round(n / t * 100) + '%' : '-';
+    out.push(`<strong>${c['Fixed']} of ${judged}</strong> judged corrections are fixed (${pc(c['Fixed'], judged)}); ${c['Improved']} improved and ${c['Still failing']} still failing. ${c['Not tested yet']} cannot be judged yet (fewer than ${d.settings.min_volume} lenses QC'd since the correction).`);
+    if (p.before.rate !== null && p.after_a.rate !== null) {
+        out.push(`Fail rate on the corrected PID.Invoices: <strong>${p.before.rate}%</strong> before, <strong>${p.after_a.rate}%</strong> in Period A (${p.after_a.fails} of ${p.after_a.qc_done}), <strong>${nv(p.after_b.rate)}%</strong> in Period B (${p.after_b.fails} of ${p.after_b.qc_done}).`);
+    }
+    const dims = Object.entries(s.dim_stats).filter(([, v]) => v.mean_abs_shift !== null).sort((a, b) => b[1].mean_abs_shift - a[1].mean_abs_shift);
+    if (dims.length) out.push(`Biggest dimension change: <strong>${escHtml(dims[0][0])}</strong> (average ${dims[0][1].mean_shift} mm, average size of change ${dims[0][1].mean_abs_shift} mm over ${dims[0][1].n} corrections).`);
+    s.by_issue.filter(g => g.fixed + g.improved + g.still_failing >= 3).forEach(g => {
+        const j = g.fixed + g.improved + g.still_failing;
+        out.push(`${escHtml(g.name)} corrections: ${g.fixed} of ${j} judged are fixed, ${g.improved} improved, ${g.still_failing} still failing (average deviation ${nv(g.avg_deviation_pct)}%).`);
+    });
+    const ppl = s.by_person.filter(g => g.n >= 3 && g.name !== '-' && g.name !== 'QC Lead').map(g => `${escHtml(g.name)} ${g.fixed + g.improved} of ${g.fixed + g.improved + g.still_failing} fixed or improved`);
+    if (ppl.length) out.push(`By person (judged corrections): ${ppl.join('; ')}.`);
+    const still = d.entries.filter(e => e.status === 'Still failing').map(e => escHtml(e.key));
+    if (still.length) out.push(`<strong>Re-correct first:</strong> ${still.join(', ')}.`);
+    if (d.pending.count) {
+        const top = d.pending.rows.slice(0, 3);
+        out.push(`<strong>${d.pending.count}</strong> PID.Invoices have ${d.settings.fail_threshold}+ fails and no correction. Worst: ${top.map(r => `${escHtml(r.key)} (${r.fails_a + r.fails_b} fails)`).join(', ')}.`);
+    }
+    document.getElementById('impact-findings').innerHTML = out.map(x => `<li>${x}</li>`).join('');
+}
+
+function renderImpactTable() {
+    if (!impactData) return;
+    const q = document.getElementById('impact-search').value.toLowerCase().trim();
+    const st = document.getElementById('impact-status').value;
+    const dim = (x) => (x.before === null && x.after === null) ? '-' : `${nv(x.before)} → ${nv(x.after)}${x.delta !== null ? ` <small>(${x.delta > 0 ? '+' : ''}${x.delta})</small>` : ''}`;
+    const rows = impactData.entries.filter(e => (st === 'all' || e.status === st) &&
+        (!q || `${e.key} ${e.person} ${e.issue} ${e.sheet} ${e.remark}`.toLowerCase().includes(q)));
+    document.getElementById('impact-count').innerText = `${rows.length} of ${impactData.entries.length}`;
+    document.getElementById('impact-tbody').innerHTML = rows.map(e => `<tr>
+        <td><strong class="cursor-pointer text-blue" onclick="quickLookupPID('${escHtml(e.key)}')">${escHtml(e.key)}</strong>${e.remark ? `<br><small class="text-muted">${escHtml(e.remark)}</small>` : ''}</td>
+        <td><small>${escHtml((e.sheet || '').trim())}<br>${fdate(e.window_end)}</small></td>
+        <td>${escHtml(e.issue)}</td><td>${escHtml(e.person) || '-'}</td><td>${nv(e.deviation_pct)}</td>
+        <td>${dim(e.dims['A'])}</td><td>${dim(e.dims['B'])}</td><td>${dim(e.dims['CIRC R'])}</td><td>${dim(e.dims['CIRC L'])}</td>
+        <td>${e.before.rate !== null ? `${e.before.rate}% <small>(${nv(e.before.fails)}/${nv(e.before.qc_done)})</small>` : '-'}</td>
+        <td>${rateTxt(e.after_a)}</td><td>${rateTxt(e.after_b)}</td>
+        <td><span class="tag-status tag-status-${e.status.replace(/ /g, '-')}">${escHtml(e.status)}</span></td></tr>`).join('')
+        || '<tr><td colspan="13" class="text-center text-muted">No corrections match</td></tr>';
+}
+
+async function saveImpactSettings() {
+    const msg = document.getElementById('impact-save-msg'), btn = document.getElementById('btn-impact-save');
+    const wins = {};
+    document.querySelectorAll('#impact-windows input[data-norm]').forEach(i => {
+        wins[i.dataset.norm] = wins[i.dataset.norm] || {};
+        wins[i.dataset.norm][i.dataset.k] = i.value;
+    });
+    btn.disabled = true; msg.innerText = 'Recalculating... this takes 20-30 seconds';
+    try {
+        const res = await fetch('/api/impact/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sheet_windows: wins, min_volume: parseInt(document.getElementById('impact-min-volume').value), fail_threshold: parseInt(document.getElementById('impact-threshold').value) }) });
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Save failed');
+        impactData = await res.json(); renderImpact(); msg.innerText = 'Saved ✓';
+        fetchMetrics();
+    } catch (e) { msg.innerText = `Error: ${e.message}`; }
+    btn.disabled = false;
+}
+
+async function checkPidInvoice() {
+    const q = document.getElementById('impact-check-input').value.trim();
+    const out = document.getElementById('impact-check-result');
+    if (!q) return;
+    out.innerHTML = '<span class="text-muted">Checking...</span>';
+    try {
+        const data = await (await fetch(`/api/impact/check?key=${encodeURIComponent(q)}`)).json();
+        if (!data.results.length) { out.innerHTML = '<div class="master-warning-item">No QC data found for that PID.Invoice in the loaded exports.</div>'; return; }
+        out.innerHTML = data.results.map(r => `<div class="impact-check-card">
+            <strong>${escHtml(r.key)}</strong> ${r.in_qc_data ? '' : '<span class="text-muted">(not in the loaded QC exports)</span>'}
+            <div>Period A: ${r.periods['Period A'].fails} fails of ${r.periods['Period A'].qc_done} QC'd (${nv(r.periods['Period A'].rate)}%) &nbsp;|&nbsp; Period B: ${r.periods['Period B'].fails} fails of ${r.periods['Period B'].qc_done} QC'd (${nv(r.periods['Period B'].rate)}%)</div>
+            <div>${r.corrections.length ? r.corrections.map(c => `Corrected in <strong>${escHtml((c.sheet || '').trim())}</strong> (${fdate(c.date)}) by ${escHtml(c.person) || '-'}: ` +
+                Object.entries(c.dims).map(([k, v]) => `${escHtml(k)} ${nv(v[0])}→${nv(v[1])}`).join(', ') + (c.remark ? ` · <em>${escHtml(c.remark)}</em>` : '')).join('<br>') : '<span class="text-muted">No correction on record</span>'}</div>
+            <div>${r.lists.length ? r.lists.map(l => `On list <strong>${escHtml(l.list)}</strong>: ${nv(l.fails)} fails of ${nv(l.qc_done)} · status ${escHtml(l.status) || 'pending'}`).join('<br>') : '<span class="text-muted">Not on your failing lists</span>'}</div>
+            <a class="cursor-pointer text-blue" onclick="quickLookupPID('${escHtml(r.key)}')">Open full history</a></div>`).join('');
+    } catch (e) { out.innerHTML = `<div class="master-warning-item">Error: ${escHtml(e.message)}</div>`; }
 }
 
 // =====================
@@ -732,6 +915,8 @@ function openManualCorrectionModal(pid = '', existingEntry = null) {
     document.getElementById('manual-dim-circ-l1').value = existingEntry && existingEntry.dims_after ? existingEntry.dims_after.CIRC_L1 : '';
     
     document.getElementById('manual-notes').value = existingEntry ? existingEntry.notes : '';
+    document.getElementById('manual-before-qc').value = existingEntry && existingEntry.before_qc_done != null ? existingEntry.before_qc_done : '';
+    document.getElementById('manual-before-fails').value = existingEntry && existingEntry.before_fails != null ? existingEntry.before_fails : '';
     modal.classList.remove('hidden');
 }
 
@@ -759,6 +944,8 @@ async function saveManualCorrectionForm() {
         b1: !isNaN(parseFloat(document.getElementById('manual-dim-b1').value)) ? parseFloat(document.getElementById('manual-dim-b1').value) : null,
         circ_r1: !isNaN(parseFloat(document.getElementById('manual-dim-circ-r1').value)) ? parseFloat(document.getElementById('manual-dim-circ-r1').value) : null,
         circ_l1: !isNaN(parseFloat(document.getElementById('manual-dim-circ-l1').value)) ? parseFloat(document.getElementById('manual-dim-circ-l1').value) : null,
+        before_qc_done: !isNaN(parseFloat(document.getElementById('manual-before-qc').value)) ? parseFloat(document.getElementById('manual-before-qc').value) : null,
+        before_fails: !isNaN(parseFloat(document.getElementById('manual-before-fails').value)) ? parseFloat(document.getElementById('manual-before-fails').value) : null,
         notes: document.getElementById('manual-notes').value.trim()
     };
 

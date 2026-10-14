@@ -8,8 +8,8 @@ echo "      Lens Shape Correction QC Dashboard Startup"
 echo "=========================================================="
 
 # Check if Python is installed
-if ! command -v python3 &> /dev/null; then
-    echo "Error: python3 is not installed or not in PATH."
+if ! command -v python &> /dev/null; then
+    echo "Error: python is not installed or not in PATH."
     exit 1
 fi
 
@@ -18,11 +18,11 @@ echo "Working directory: $(pwd)"
 
 # Install dependencies if not already installed (done in system path if possible)
 echo "Ensuring required Python libraries are installed..."
-python3 -c "import pandas, openpyxl, fastapi, uvicorn, calamine, rapidfuzz" 2>/dev/null
+python -c "import pandas, openpyxl, fastapi, uvicorn, calamine, rapidfuzz" 2>/dev/null
 if [ $? -ne 0 ]; then
     echo "Installing missing libraries (pandas, openpyxl, fastapi, uvicorn, python-calamine, python-multipart, rapidfuzz)..."
-    python3 -m pip install pandas openpyxl fastapi uvicorn python-calamine python-multipart rapidfuzz 2>/dev/null || \
-    python3 -m pip install --break-system-packages pandas openpyxl fastapi uvicorn python-calamine python-multipart rapidfuzz 2>/dev/null || \
+    python -m pip install pandas openpyxl fastapi uvicorn python-calamine python-multipart rapidfuzz 2>/dev/null || \
+    python -m pip install --break-system-packages pandas openpyxl fastapi uvicorn python-calamine python-multipart rapidfuzz 2>/dev/null || \
     uv pip install pandas openpyxl fastapi uvicorn python-calamine python-multipart rapidfuzz
 else
     echo "All dependencies verified successfully."
@@ -35,4 +35,4 @@ echo "You can open http://localhost:8000 in your browser."
 echo "Press Ctrl+C to stop the server."
 echo "----------------------------------------------------------"
 
-PYTHONPATH=. python3 backend/main.py
+PYTHONPATH=. python backend/main.py

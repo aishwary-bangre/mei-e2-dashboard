@@ -1,0 +1,22 @@
+[
+  {
+    "source_label": "Wk 8/3/2026 - 8/8/2026",
+    "loaded_as": "Period A",
+    "rows_in_file": 948,
+    "rows_added": 948,
+    "first_date": "2026-08-03",
+    "last_date": "2026-08-07",
+    "ingested_at": "2026-10-10 18:24:52",
+    "last_seen_at": "2026-10-10 19:39:41"
+  },
+  {
+    "source_label": "Wk 8/8/2026 - 8/13/2026",
+    "loaded_as": "Period B",
+    "rows_in_file": 627,
+    "rows_added": 627,
+    "first_date": "2026-08-08",
+    "last_date": "2026-08-12",
+    "ingested_at": "2026-10-10 18:24:53",
+    "last_seen_at": "2026-10-10 19:39:42"
+  }
+]

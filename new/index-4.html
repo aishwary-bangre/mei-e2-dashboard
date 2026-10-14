@@ -46,7 +46,7 @@
         <!-- 500,000 Row Boundary Cap Warning Banner -->
         <div class="warning-banner hidden" id="row-cap-warning-banner">
             <span class="warning-icon">⚠️</span>
-            <span class="warning-text"><strong>Warning:</strong> One or more loaded datasets hit exactly 500,000 rows. Data may be incomplete and totals may undercount.</span>
+            <span class="warning-text"><strong>Warning:</strong> an export hit its row limit, so totals may undercount.</span>
         </div>
 
         <!-- ==================================================== -->
@@ -81,92 +81,73 @@
                 </div>
             </div>
 
-            <!-- KPI Cards Grid (4 main cards) -->
+            <!-- KPI Cards Grid (5 main cards) -->
             <section class="kpi-grid">
                 <div class="glass-card kpi-card kpi-rate-card">
-                    <span class="kpi-title">MEI Shape Fail Rate</span>
+                    <span class="kpi-title">Shape Fail Rate (Period B)</span>
                     <span class="kpi-value text-blue" id="kpi-fail-rate">0%</span>
-                    <span class="kpi-desc">MEI Failures / QC Done</span>
+                    <span class="kpi-desc" id="kpi-fail-rate-desc">Shape fails / lenses QC'd</span>
                 </div>
 
                 <div class="glass-card kpi-card">
-                    <span class="kpi-title">Machine Failures</span>
+                    <span class="kpi-title">Shape Fail Events (Period B)</span>
                     <span class="kpi-value text-red" id="kpi-machine-failures">0</span>
-                    <span class="kpi-desc">Total MEI shape fail events</span>
+                    <span class="kpi-desc" id="kpi-events-desc">Lenses failed for a shape issue</span>
+                </div>
+
+                <div class="glass-card kpi-card success-card">
+                    <span class="kpi-title">Corrected</span>
+                    <span class="kpi-value text-green" id="kpi-corrected">0</span>
+                    <span class="kpi-desc">Period-A failed PIDs, corrected and not failing again</span>
                 </div>
 
                 <div class="glass-card kpi-card danger-card">
                     <span class="kpi-title">Recurred</span>
                     <span class="kpi-value text-red" id="kpi-recurred">0</span>
-                    <span class="kpi-desc">Corrected but failed again</span>
+                    <span class="kpi-desc">Corrected, but lenses cut after it still failed</span>
                 </div>
 
                 <div class="glass-card kpi-card warning-card">
                     <span class="kpi-title">Pending</span>
                     <span class="kpi-value text-yellow" id="kpi-pending">0</span>
-                    <span class="kpi-desc">No correction logged, still failing</span>
+                    <span class="kpi-desc">No correction logged and still failing</span>
                 </div>
             </section>
 
             <!-- Charts Grid -->
             <section class="charts-grid">
-                <!-- 1. Shape Failure Pareto -->
                 <div class="glass-card chart-container span-2">
                     <div class="chart-header">
-                        <h3>Shape Failure Pareto (Failure Events)</h3>
-                        <p class="chart-sub">BIG vs SMALL vs WRONG SHAPE vs SLIP — counted by failure events, not unique PIDs</p>
+                        <h3>Shape Failures by Issue: Period A vs B</h3>
+                        <p class="chart-sub">Lenses failed per issue. Shows which shape problem is growing or shrinking.</p>
                     </div>
                     <div id="chart-pareto" class="plotly-wrapper"></div>
                 </div>
-
-                <!-- 2. Machine Problem Table -->
-                <div class="glass-card chart-container span-2">
-                    <div class="chart-header">
-                        <h3>Machine Problem Table</h3>
-                        <p class="chart-sub">Click any machine row to drill into its affected PIDs</p>
-                    </div>
-                    <div class="table-scroll" id="machine-table-scroll">
-                        <table id="machine-problem-table">
-                            <thead>
-                                <tr>
-                                    <th>Machine</th>
-                                    <th>Failures</th>
-                                    <th>Fail Rate %</th>
-                                    <th>Top Issue</th>
-                                    <th>Recurred</th>
-                                </tr>
-                            </thead>
-                            <tbody id="machine-table-body">
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <!-- 3. Machine × Issue Heatmap -->
-                <div class="glass-card chart-container span-2">
-                    <div class="chart-header">
-                        <h3>Machine × Issue Heatmap</h3>
-                        <p class="chart-sub">Identifies which machines have unusually high rates of specific shape problems</p>
-                    </div>
-                    <div id="chart-heatmap" class="plotly-wrapper"></div>
-                </div>
-
-                <!-- 4. Correction Effectiveness -->
                 <div class="glass-card chart-container">
                     <div class="chart-header">
-                        <h3>Correction Effectiveness</h3>
-                        <p class="chart-sub">Corrected → Recurred → Pending across all PIDs</p>
+                        <h3>Fail Rate by Shift</h3>
+                        <p class="chart-sub">% of lenses QC'd that failed, by the shift the lens was cut in</p>
+                    </div>
+                    <div id="chart-shift-drift" class="plotly-wrapper"></div>
+                </div>
+                <div class="glass-card chart-container">
+                    <div class="chart-header">
+                        <h3>Correction Outcome</h3>
+                        <p class="chart-sub">What happened to the PIDs that failed in Period A</p>
                     </div>
                     <div id="chart-correction-eff" class="plotly-wrapper"></div>
                 </div>
-
-                <!-- 5. Shift Drift -->
-                <div class="glass-card chart-container">
+                <div class="glass-card chart-container span-all">
                     <div class="chart-header">
-                        <h3>Shift Defect Drift</h3>
-                        <p class="chart-sub">Failure events across Morning, Evening, Night shifts</p>
+                        <h3>PIDs Needing Action</h3>
+                        <p class="chart-sub">Recurred and Pending PIDs, worst first (by Period B failures). Click a PID for its full history.</p>
                     </div>
-                    <div id="chart-shift-drift" class="plotly-wrapper"></div>
+                    <div class="table-scroll">
+                        <table>
+                            <thead><tr><th>PID</th><th>Status</th><th>Fails A</th><th>Fails B</th><th>Main issue</th><th>Last correction</th><th>Person Involved</th></tr></thead>
+                            <tbody id="action-table-body"></tbody>
+                        </table>
+                    </div>
                 </div>
             </section>
 
@@ -198,6 +179,9 @@
 
             <!-- Explorer Sub-Navigation Pills -->
             <div class="explorer-subnav glass-card">
+                <button class="subtab-btn" id="subtab-master">
+                    <span>🗄️ Master Database</span>
+                </button>
                 <button class="subtab-btn active" id="subtab-pid">
                     <span>🔍 PID Lookup</span>
                 </button>
@@ -213,6 +197,65 @@
                 <button class="subtab-btn" id="subtab-corrections">
                     <span>📝 Correction Log</span>
                 </button>
+            </div>
+
+            <!-- Sub-View 0: Master Database (everything, first entry to last) -->
+            <div id="exp-panel-master" class="explorer-panel hidden">
+                <div class="master-summary-grid" id="master-summary"></div>
+                <div id="master-warnings" class="master-warnings hidden"></div>
+
+                <details class="glass-card master-sources">
+                    <summary>Data sources loaded <span id="master-sources-count"></span></summary>
+                    <div class="table-scroll">
+                        <table>
+                            <thead><tr><th>Export period</th><th>Loaded as</th><th>Rows</th><th>Added to archive</th><th>First date</th><th>Last date</th><th>First loaded</th></tr></thead>
+                            <tbody id="master-sources-tbody"></tbody>
+                        </table>
+                    </div>
+                </details>
+
+                <div class="glass-card table-control-card">
+                    <div class="table-controls-row master-controls">
+                        <input type="text" id="exp-master-search" placeholder="Search PID, PID.Invoice, machine, person, reason, source..." class="search-input" />
+                        <select id="exp-master-type" class="select-input">
+                            <option value="all">All records</option>
+                            <option value="fail">QC fails only</option>
+                            <option value="correction">Corrections only</option>
+                        </select>
+                        <label class="master-date">From <input type="date" id="exp-master-from" class="select-input" /></label>
+                        <label class="master-date">To <input type="date" id="exp-master-to" class="select-input" /></label>
+                        <select id="exp-master-limit" class="select-input">
+                            <option value="50" selected>50</option>
+                            <option value="100">100</option>
+                            <option value="500">500</option>
+                        </select>
+                        <button class="btn btn-secondary" id="btn-master-export">⬇ Export CSV</button>
+                    </div>
+                    <div class="table-scroll">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Type</th>
+                                    <th class="sortable" data-sort="date">Date <span class="sort-icon">↕</span></th>
+                                    <th>PID.Invoice</th>
+                                    <th>Reason</th>
+                                    <th>Machine / Person</th>
+                                    <th>Details</th>
+                                    <th>Source</th>
+                                </tr>
+                            </thead>
+                            <tbody id="exp-master-tbody"></tbody>
+                        </table>
+                    </div>
+                    <div class="pagination-bar">
+                        <span class="pagination-info" id="exp-master-page-info">0 of 0</span>
+                        <div class="pagination-buttons">
+                            <button id="exp-master-prev" class="btn btn-sm btn-secondary">Prev</button>
+                            <span class="page-number" id="exp-master-page-num">1</span>
+                            <button id="exp-master-next" class="btn btn-sm btn-secondary">Next</button>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- Sub-View 1: Single PID Lookup -->
@@ -259,7 +302,7 @@
                                     <span class="meta-value" id="pid-primary-reason">N/A</span>
                                 </div>
                                 <div class="pid-meta-item">
-                                    <span class="meta-label">Latest Tech</span>
+                                    <span class="meta-label">Latest Person Involved</span>
                                     <span class="meta-value" id="pid-summary-tech">N/A</span>
                                 </div>
                             </div>
@@ -310,7 +353,7 @@
                                             <th>Issue</th>
                                             <th>Before</th>
                                             <th>After</th>
-                                            <th>Tech</th>
+                                            <th>Person Involved</th>
                                             <th>Action</th>
                                         </tr>
                                     </thead>
@@ -327,7 +370,7 @@
             <div id="exp-panel-classifications" class="explorer-panel hidden">
                 <div class="glass-card table-control-card">
                     <div class="table-controls-row">
-                        <input type="text" id="exp-class-search" placeholder="Search PID, vendor, reason, tech..." class="search-input" />
+                        <input type="text" id="exp-class-search" placeholder="Search PID, vendor, reason, person..." class="search-input" />
                         <select id="exp-class-status-filter" class="select-input">
                             <option value="all">All</option>
                             <option value="Corrected">Corrected</option>
@@ -426,7 +469,7 @@
             <div id="exp-panel-corrections" class="explorer-panel hidden">
                 <div class="glass-card table-control-card">
                     <div class="table-controls-row">
-                        <input type="text" id="exp-corr-search" placeholder="Search PID, invoice, issue, tech..." class="search-input" />
+                        <input type="text" id="exp-corr-search" placeholder="Search PID, invoice, issue, person..." class="search-input" />
                         <button class="btn btn-success" id="btn-open-manual-corr-modal">+ Log Correction</button>
                         <select id="exp-corr-limit" class="select-input">
                             <option value="50" selected>50</option>
@@ -444,7 +487,7 @@
                                     <th>Normalized</th>
                                     <th>Before</th>
                                     <th>After</th>
-                                    <th class="sortable" data-sort="done_by">Tech <span class="sort-icon">↕</span></th>
+                                    <th class="sortable" data-sort="done_by">Person Involved <span class="sort-icon">↕</span></th>
                                     <th>Update</th>
                                 </tr>
                             </thead>
@@ -483,7 +526,7 @@
                         <input type="text" id="manual-pid" required placeholder="e.g. 219754.INV123" class="form-input" />
                     </div>
                     <div class="form-group">
-                        <label for="manual-done-by">Technician</label>
+                        <label for="manual-done-by">Person Involved</label>
                         <input type="text" id="manual-done-by" placeholder="e.g. QC Lead" class="form-input" />
                     </div>
                     <div class="form-group">

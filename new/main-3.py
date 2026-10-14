@@ -63,7 +63,8 @@ async def get_status():
             "uploaded": True,
             "week_past_label": analyzer_instance.week_past_label,
             "week_this_label": analyzer_instance.week_this_label,
-            "row_cap_warning": analyzer_instance.row_cap_warning
+            "row_cap_warning": analyzer_instance.row_cap_warning,
+            "row_cap_notes": analyzer_instance.row_cap_notes
         }
     return {
         "uploaded": False,
@@ -290,6 +291,45 @@ async def delete_manual_correction(entry_id: str):
         "message": "Manual correction removed.",
         "summary": updated_analysis["summary"]
     }
+
+@app.get("/api/explorer/master/summary")
+async def get_master_summary():
+    global analyzer_instance
+    if analyzer_instance is None:
+        raise HTTPException(status_code=400, detail="Analyzer not initialized.")
+    return analyzer_instance.get_master_summary()
+
+@app.get("/api/explorer/master")
+async def get_explorer_master(
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=500),
+    search: str = Query(""),
+    type: str = Query("all"),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+    sort_order: str = Query("desc")
+):
+    global analyzer_instance
+    if analyzer_instance is None:
+        raise HTTPException(status_code=400, detail="Analyzer not initialized.")
+    return analyzer_instance.get_explorer_master(page, limit, search, type, date_from, date_to, sort_order)
+
+@app.get("/api/explorer/master/export")
+async def export_master(
+    search: str = Query(""),
+    type: str = Query("all"),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+    sort_order: str = Query("asc")
+):
+    global analyzer_instance
+    if analyzer_instance is None:
+        raise HTTPException(status_code=400, detail="Analyzer not initialized.")
+    df = analyzer_instance.export_master_rows(search, type, date_from, date_to, sort_order)
+    stream = io.StringIO()
+    df.to_csv(stream, index=False)
+    return Response(content=stream.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=master_database.csv"})
 
 class DimsUpdateRequest(BaseModel):
     a: Optional[float] = None

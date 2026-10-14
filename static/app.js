@@ -20,8 +20,8 @@ document.addEventListener('DOMContentLoaded', () => {
     loadAnalytics();
     checkHealth();
 
-    const savedTab = localStorage.getItem('mei_active_tab') || 'tab1';
-    switchTab(savedTab);
+    const savedSys = localStorage.getItem('mei_active_system') || (localStorage.getItem('mei_active_tab') === 'tab3' ? 'shape' : 'e2');
+    switchSystem(savedSys);
 
     // Auto-update shift selector every minute and health every 10s
     setInterval(autoSelectCurrentShift, 60000);
@@ -34,6 +34,13 @@ async function checkHealth() {
         const data = await res.json();
         const dbPill = document.getElementById('lblDbStatus');
         const cardBadge = document.getElementById('lblQueryLatency');
+
+        const activeSys = localStorage.getItem('mei_active_system') || 'e2';
+        if (activeSys === 'shape' && dbPill) {
+            dbPill.style.display = 'none';
+        } else if (dbPill) {
+            dbPill.style.display = 'inline-flex';
+        }
 
         if (data.status === 'online') {
             if (dbPill) {
@@ -97,54 +104,144 @@ function toggleTheme() {
         if (btn) btn.innerHTML = '🌙';
         localStorage.setItem('mei_theme', 'dark');
     }
+    if (activeTab === 'tab3' && typeof renderAllShapeCharts === 'function' && globalShapeData) {
+        renderAllShapeCharts(globalShapeData);
+    }
 }
 
-async function promptSetAdaptivePassword() {
-    const pwd = prompt("Enter Adaptive Session Password (from terminal output):");
-    if (pwd && pwd.trim()) {
-        try {
-            const res = await fetch('/api/config/password', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ password: pwd.trim() })
-            });
-            const data = await res.json();
-            if (data.success) {
-                const dbPill = document.getElementById('lblDbStatus');
-                if (dbPill) {
-                    dbPill.className = 'stat-pill badge-online';
-                    dbPill.innerHTML = '🟢 MySQL Connected';
-                }
-                const trayVal = document.getElementById('txtScanTray')?.value?.trim().toUpperCase();
-                if (trayVal) {
-                    triggerLookup(trayVal);
-                }
-            } else {
-                alert("Failed to update password: " + (data.error || "Unknown error"));
-            }
-        } catch (e) {
-            alert("Error updating password: " + e);
+
+
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// 1. DUAL SYSTEM & TAB SWITCHING LOGIC (MEI E2 vs SHAPE CORRECTION)
+// -----------------------------------------------------------------------------
+let activeSystem = 'e2'; // 'e2' or 'shape'
+
+function switchSystem(sysId) {
+    activeSystem = sysId;
+    localStorage.setItem('mei_active_system', sysId);
+
+    const btnSysE2 = document.getElementById('btnSysE2');
+    const btnSysShape = document.getElementById('btnSysShape');
+    const selSys = document.getElementById('selSystemModule');
+    const navE2 = document.getElementById('navE2Tabs');
+    const navShape = document.getElementById('navShapeTabs');
+    const brandIcon = document.getElementById('brandIcon');
+    const titleEl = document.getElementById('lblSystemTitle');
+    const subTitleEl = document.getElementById('lblSystemSubtitle');
+    const e2Controls = document.getElementById('e2HeaderControls');
+    const shapeControls = document.getElementById('shapeHeaderControls');
+
+    document.querySelectorAll('.system-switch-btn').forEach(btn => {
+        if (btn.innerText.includes('E2 Escalation')) {
+            btn.classList.toggle('active', sysId === 'e2');
+        } else if (btn.innerText.includes('Shape Correction')) {
+            btn.classList.toggle('active', sysId === 'shape');
+        }
+    });
+
+    const headerBar = document.querySelector('header.header-bar');
+    const dbStatus = document.getElementById('lblDbStatus');
+    if (sysId === 'e2') {
+        if (headerBar) headerBar.style.display = 'flex';
+        document.body.classList.remove('shape-mode');
+        if (titleEl) titleEl.innerText = 'MEI E2 Escalation System';
+        if (subTitleEl) subTitleEl.innerText = 'Factory Quality & Escalation Analytics Platform';
+        if (brandIcon) brandIcon.innerText = '⚡';
+        if (navE2) navE2.style.display = 'flex';
+        if (navShape) navShape.style.display = 'none';
+        if (e2Controls) e2Controls.style.display = 'flex';
+        if (shapeControls) shapeControls.style.display = 'none';
+        if (dbStatus) dbStatus.style.display = 'inline-flex';
+
+        const lastE2Tab = localStorage.getItem('mei_last_e2_tab') || 'tab1';
+        switchTab(lastE2Tab);
+    } else {
+        if (headerBar) headerBar.style.display = 'none';
+        document.body.classList.add('shape-mode');
+        if (navE2) navE2.style.display = 'none';
+        if (navShape) navShape.style.display = 'none';
+        if (e2Controls) e2Controls.style.display = 'none';
+        if (shapeControls) shapeControls.style.display = 'none';
+        if (dbStatus) dbStatus.style.display = 'none'; // Shape Correction doesn't need DB access
+        closePasswordModal();
+
+        switchTab('tab3');
+        if (typeof initShapeCorrectionTab === 'function') {
+            initShapeCorrectionTab();
+        }
+        const lastShapeView = localStorage.getItem('mei_last_shape_view') || 'analytics';
+        if (typeof switchShapeSubView === 'function') {
+            switchShapeSubView(lastShapeView);
         }
     }
 }
 
-// -----------------------------------------------------------------------------
-// 1. TAB SWITCHING LOGIC
-// -----------------------------------------------------------------------------
 function switchTab(tabId) {
     activeTab = tabId;
     localStorage.setItem('mei_active_tab', tabId);
+
+    if (tabId === 'tab1' || tabId === 'tab2') {
+        localStorage.setItem('mei_last_e2_tab', tabId);
+    }
+
+    // Toggle active class on tab buttons and contents
     document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
 
     if (tabId === 'tab1') {
-        document.getElementById('btnTab1').classList.add('active');
-        document.getElementById('tab1').classList.add('active');
-        document.getElementById('txtScanTray').focus();
-    } else {
-        document.getElementById('btnTab2').classList.add('active');
-        document.getElementById('tab2').classList.add('active');
+        const btn1 = document.getElementById('btnTab1');
+        const t1 = document.getElementById('tab1');
+        if (btn1) btn1.classList.add('active');
+        if (t1) t1.classList.add('active');
+        const txt = document.getElementById('txtScanTray');
+        if (txt) txt.focus();
+    } else if (tabId === 'tab2') {
+        const btn2 = document.getElementById('btnTab2');
+        const t2 = document.getElementById('tab2');
+        if (btn2) btn2.classList.add('active');
+        if (t2) t2.classList.add('active');
         loadAnalytics();
+    } else if (tabId === 'tab3') {
+        const t3 = document.getElementById('tab3');
+        if (t3) t3.classList.add('active');
+        if (typeof initShapeCorrectionTab === 'function') {
+            initShapeCorrectionTab();
+        }
+    }
+}
+
+function switchShapeSubView(viewId) {
+    localStorage.setItem('mei_last_shape_view', viewId);
+    const btnAn = document.getElementById('btnShapeAnalytics');
+    const btnEx = document.getElementById('btnShapeExplorer');
+    const btnIm = document.getElementById('btnShapeImpact');
+    const viewAn = document.getElementById('analytics-view');
+    const viewEx = document.getElementById('explorer-view');
+    const viewIm = document.getElementById('impact-view');
+
+    // Also sync the sub-pills inside Tab 3 if present
+    const pillAn = document.getElementById('tab-btn-analytics');
+    const pillEx = document.getElementById('tab-btn-explorer');
+    const pillIm = document.getElementById('tab-btn-impact');
+
+    if (btnAn) btnAn.classList.toggle('active', viewId === 'analytics');
+    if (btnEx) btnEx.classList.toggle('active', viewId === 'explorer');
+    if (btnIm) btnIm.classList.toggle('active', viewId === 'impact');
+    if (pillAn) pillAn.classList.toggle('active', viewId === 'analytics');
+    if (pillEx) pillEx.classList.toggle('active', viewId === 'explorer');
+    if (pillIm) pillIm.classList.toggle('active', viewId === 'impact');
+
+    if (viewAn) viewAn.classList.toggle('hidden', viewId !== 'analytics');
+    if (viewEx) viewEx.classList.toggle('hidden', viewId !== 'explorer');
+    if (viewIm) viewIm.classList.toggle('hidden', viewId !== 'impact');
+
+    if (viewId === 'impact' && typeof fetchImpact === 'function') {
+        fetchImpact();
+    }
+
+    if (typeof initShapeCorrectionTab === 'function') {
+        initShapeCorrectionTab();
     }
 }
 
@@ -295,13 +392,23 @@ function renderSelectElement(selectId, optionsList, isSearchable = false) {
 function openOptionsModal(fieldId, fieldLabel) {
     activeModalFieldId = fieldId;
     document.getElementById('modalTitle').textContent = `⚙️ Manage Options: ${fieldLabel}`;
-    document.getElementById('modalOptions').classList.add('active');
+    const m = document.getElementById('modalOptions');
+    if (m) {
+        m.classList.remove('hidden');
+        m.classList.add('active');
+        m.style.display = 'flex';
+    }
     document.getElementById('txtNewOption').value = '';
     renderModalOptionsList();
 }
 
 function closeOptionsModal() {
-    document.getElementById('modalOptions').classList.remove('active');
+    const m = document.getElementById('modalOptions');
+    if (m) {
+        m.classList.remove('active');
+        m.classList.add('hidden');
+        m.style.display = 'none';
+    }
     activeModalFieldId = null;
 }
 
@@ -1489,6 +1596,10 @@ function renderBarChart(topIssues) {
 // 8. ADAPTIVE TERMINAL PASSWORD VERIFICATION & SYNC
 // -----------------------------------------------------------------------------
 function promptSetAdaptivePassword() {
+    const activeSys = localStorage.getItem('mei_active_system') || 'e2';
+    if (activeSys === 'shape') {
+        return; // Shape Correction doesn't need DB access
+    }
     const modal = document.getElementById('modalPassword');
     const txt = document.getElementById('txtAdaptivePassword');
     const msg = document.getElementById('pwdStatusMsg');
@@ -1499,13 +1610,19 @@ function promptSetAdaptivePassword() {
         msg.textContent = '';
         msg.style.color = 'var(--text-muted)';
     }
+    modal.classList.remove('hidden');
     modal.classList.add('active');
+    modal.style.display = 'flex';
     setTimeout(() => txt.focus(), 100);
 }
 
 function closePasswordModal() {
     const modal = document.getElementById('modalPassword');
-    if (modal) modal.classList.remove('active');
+    if (modal) {
+        modal.classList.remove('active');
+        modal.classList.add('hidden');
+        modal.style.display = 'none';
+    }
 }
 
 async function submitAdaptivePassword() {

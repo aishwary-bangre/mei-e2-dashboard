@@ -7,6 +7,8 @@ import socket
 import time
 import datetime
 import threading
+import tempfile
+import shutil
 from flask import Flask, render_template, request, jsonify, send_file
 from flask_cors import CORS
 import pymysql  # type: ignore
@@ -1662,6 +1664,411 @@ def export_csv():
         as_attachment=True,
         mimetype="text/csv"
     )
+
+
+# =============================================================================
+# 8. MEI SHAPE CORRECTION SYSTEM & DATA EXPLORER API
+# =============================================================================
+SHAPE_TEMP_DIR = tempfile.mkdtemp(prefix="mei_shape_")
+PROJEECT_BASE_DIR = os.path.join(os.path.dirname(__file__), "projeect copy 2")
+DEFAULT_PAST_PATH = os.path.join(PROJEECT_BASE_DIR, "QC Raw Data-2.xlsx")
+DEFAULT_THIS_PATH = os.path.join(PROJEECT_BASE_DIR, "QC Raw Data-3.xlsx")
+DEFAULT_MANUAL_CORRECTIONS_PATH = os.path.join(PROJEECT_BASE_DIR, "data", "manual_corrections.json")
+DEFAULT_ARCHIVE_PATH = os.path.join(PROJEECT_BASE_DIR, "data", "qc_fail_archive.csv")
+DEFAULT_SETTINGS_PATH = os.path.join(PROJEECT_BASE_DIR, "data", "impact_settings.json")
+DEFAULT_CORRECTION_LOG_PATH = os.path.join(PROJEECT_BASE_DIR, "data", "MEI SHAPE CORRECTION Tracker.xlsx")
+if not os.path.exists(DEFAULT_CORRECTION_LOG_PATH):
+    alt_corr = os.path.join(os.path.dirname(__file__), "data", "MEI SHAPE CORRECTION Tracker.xlsx")
+    if os.path.exists(alt_corr):
+        DEFAULT_CORRECTION_LOG_PATH = alt_corr
+
+session_past_path = DEFAULT_PAST_PATH
+session_this_path = DEFAULT_THIS_PATH
+
+GLOBAL_SHAPE_ANALYZER = None
+CACHED_SHAPE_METRICS = None
+SHAPE_ANALYZER_LOCK = threading.RLock()
+
+
+def get_shape_analyzer():
+    """Lazy-load and initialize the MEIAnalyzer instance thread-safely."""
+    global GLOBAL_SHAPE_ANALYZER, session_past_path, session_this_path
+    with SHAPE_ANALYZER_LOCK:
+        if GLOBAL_SHAPE_ANALYZER is None:
+            if PROJEECT_BASE_DIR not in sys.path:
+                sys.path.insert(0, PROJEECT_BASE_DIR)
+            from backend.analyzer import MEIAnalyzer
+            past_p = session_past_path if os.path.exists(session_past_path) else DEFAULT_PAST_PATH
+            this_p = session_this_path if os.path.exists(session_this_path) else DEFAULT_THIS_PATH
+            manual_p = DEFAULT_MANUAL_CORRECTIONS_PATH
+            archive_p = DEFAULT_ARCHIVE_PATH
+            settings_p = DEFAULT_SETTINGS_PATH
+            corr_p = DEFAULT_CORRECTION_LOG_PATH
+            print(f"[*] Initializing MEIAnalyzer from projeect copy 2 (Period A: {os.path.basename(past_p)}, Period B: {os.path.basename(this_p)}, Log: {os.path.basename(corr_p)})...")
+            GLOBAL_SHAPE_ANALYZER = MEIAnalyzer(past_p, this_p, correction_log_path=corr_p, manual_corrections_path=manual_p, archive_path=archive_p, settings_path=settings_p)
+            print("[+] MEIAnalyzer initialized successfully.")
+        return GLOBAL_SHAPE_ANALYZER
+
+
+def get_cached_shape_metrics():
+    """Retrieve cached shape metrics or compute them once."""
+    global CACHED_SHAPE_METRICS
+    with SHAPE_ANALYZER_LOCK:
+        if CACHED_SHAPE_METRICS is None:
+            analyzer = get_shape_analyzer()
+            CACHED_SHAPE_METRICS = analyzer.analyze()
+        return CACHED_SHAPE_METRICS
+
+
+def invalidate_shape_cache():
+    """Invalidate cached metrics so next read recomputes."""
+    global CACHED_SHAPE_METRICS
+    with SHAPE_ANALYZER_LOCK:
+        CACHED_SHAPE_METRICS = None
+
+
+@app.route('/api/status', methods=['GET'])
+@app.route('/api/shape/status', methods=['GET'])
+def get_shape_status():
+    try:
+        analyzer = get_shape_analyzer()
+        return jsonify({
+            "uploaded": True,
+            "week_past_label": analyzer.week_past_label,
+            "week_this_label": analyzer.week_this_label,
+            "row_cap_warning": analyzer.row_cap_warning,
+            "row_cap_notes": analyzer.row_cap_notes
+        })
+    except Exception as e:
+        return jsonify({
+            "uploaded": False,
+            "message": f"Error loading shape analyzer: {str(e)}"
+        })
+
+
+@app.route('/api/upload/period_a', methods=['POST'])
+@app.route('/api/shape/upload/period_a', methods=['POST'])
+def upload_shape_period_a():
+    global session_past_path, GLOBAL_SHAPE_ANALYZER
+    if not request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+    file = request.files.get('file') or next(iter(request.files.values()))
+    if not file or not file.filename:
+        return jsonify({"error": "Empty filename"}), 400
+    try:
+        temp_path = os.path.join(SHAPE_TEMP_DIR, f"period_a_{file.filename}")
+        file.save(temp_path)
+        session_past_path = temp_path
+        with SHAPE_ANALYZER_LOCK:
+            GLOBAL_SHAPE_ANALYZER = None
+        invalidate_shape_cache()
+        analyzer = get_shape_analyzer()
+        return jsonify({
+            "success": True,
+            "message": "Period A file uploaded to session.",
+            "week_past_label": analyzer.week_past_label if analyzer else "Period A",
+            "week_this_label": analyzer.week_this_label if analyzer else "Period B",
+            "row_cap_warning": analyzer.row_cap_warning if analyzer else False,
+            "row_cap_notes": analyzer.row_cap_notes if analyzer else []
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to process Period A upload: {str(e)}"}), 500
+
+
+@app.route('/api/upload/period_b', methods=['POST'])
+@app.route('/api/shape/upload/period_b', methods=['POST'])
+def upload_shape_period_b():
+    global session_this_path, GLOBAL_SHAPE_ANALYZER
+    if not request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+    file = request.files.get('file') or next(iter(request.files.values()))
+    if not file or not file.filename:
+        return jsonify({"error": "Empty filename"}), 400
+    try:
+        temp_path = os.path.join(SHAPE_TEMP_DIR, f"period_b_{file.filename}")
+        file.save(temp_path)
+        session_this_path = temp_path
+        with SHAPE_ANALYZER_LOCK:
+            GLOBAL_SHAPE_ANALYZER = None
+        invalidate_shape_cache()
+        analyzer = get_shape_analyzer()
+        return jsonify({
+            "success": True,
+            "message": "Period B file uploaded to session.",
+            "week_past_label": analyzer.week_past_label if analyzer else "Period A",
+            "week_this_label": analyzer.week_this_label if analyzer else "Period B",
+            "row_cap_warning": analyzer.row_cap_warning if analyzer else False,
+            "row_cap_notes": analyzer.row_cap_notes if analyzer else []
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to process Period B upload: {str(e)}"}), 500
+
+
+@app.route('/api/metrics', methods=['GET'])
+@app.route('/api/shape/metrics', methods=['GET'])
+def get_shape_metrics():
+    try:
+        return jsonify(get_cached_shape_metrics())
+    except Exception as e:
+        return jsonify({"error": f"Error computing metrics: {str(e)}"}), 500
+
+
+@app.route('/api/drilldown', methods=['POST'])
+@app.route('/api/shape/drilldown', methods=['POST'])
+def get_shape_drilldown():
+    req = request.get_json(force=True, silent=True) or {}
+    category_type = req.get('category_type', '')
+    filter_value = req.get('filter_value', '')
+    filter_secondary = req.get('filter_secondary')
+
+    try:
+        analysis = get_cached_shape_metrics()
+        all_pids = analysis.get("classified_pids", [])
+
+        if category_type in ["sankey_outcome", "pareto"]:
+            filtered = [p for p in all_pids if p.get("classification") == filter_value or p.get("reason_cluster") == filter_value]
+        elif category_type in ["heatmap_machine", "machine"]:
+            filtered = [p for p in all_pids if p.get("qc_person_id") == filter_value]
+        elif category_type == "machine_outcome":
+            filtered = [p for p in all_pids if p.get("qc_person_id") == filter_value and (not filter_secondary or p.get("classification") == filter_secondary)]
+        elif category_type == "heatmap_vendor":
+            filtered = [p for p in all_pids if p.get("vendor_invoice_number") == filter_value and (not filter_secondary or p.get("pid") == filter_secondary)]
+        else:
+            filtered = all_pids
+
+        return jsonify({"count": len(filtered), "pids": filtered})
+    except Exception as e:
+        return jsonify({"error": f"Drilldown failed: {str(e)}"}), 500
+
+
+@app.route('/api/export_csv', methods=['GET'])
+@app.route('/api/shape/export_csv', methods=['GET'])
+def export_shape_csv():
+    try:
+        analysis = get_cached_shape_metrics()
+        all_pids = analysis.get("classified_pids", [])
+        import pandas as pd
+        df_export = pd.DataFrame(all_pids)
+        stream = io.StringIO()
+        df_export.to_csv(stream, index=False)
+        return send_file(
+            io.BytesIO(stream.getvalue().encode('utf-8')),
+            download_name="mei_pid_classification.csv",
+            as_attachment=True,
+            mimetype="text/csv"
+        )
+    except Exception as e:
+        return jsonify({"error": f"Failed to export CSV: {str(e)}"}), 500
+
+
+@app.route('/api/explorer/master', methods=['GET'])
+@app.route('/api/shape/explorer/master', methods=['GET'])
+def get_shape_explorer_master():
+    try:
+        page = int(request.args.get('page', 1))
+        limit = min(int(request.args.get('limit', 50)), 500)
+        search = request.args.get('search', '')
+        type_filter = request.args.get('type', 'all')
+        date_from = request.args.get('date_from', '')
+        date_to = request.args.get('date_to', '')
+        sort_order = request.args.get('sort_order', 'desc')
+        analyzer = get_shape_analyzer()
+        return jsonify(analyzer.get_explorer_master(page, limit, search, type_filter, date_from, date_to, sort_order))
+    except Exception as e:
+        return jsonify({"error": f"Failed to fetch master data: {str(e)}"}), 500
+
+
+@app.route('/api/explorer/master/summary', methods=['GET'])
+@app.route('/api/shape/explorer/master/summary', methods=['GET'])
+def get_shape_master_summary():
+    try:
+        analyzer = get_shape_analyzer()
+        return jsonify(analyzer.get_master_summary())
+    except Exception as e:
+        return jsonify({"error": f"Failed to fetch master summary: {str(e)}"}), 500
+
+
+@app.route('/api/explorer/master/export', methods=['GET'])
+@app.route('/api/shape/explorer/master/export', methods=['GET'])
+def export_shape_master():
+    try:
+        search = request.args.get('search', '')
+        type_filter = request.args.get('type', 'all')
+        date_from = request.args.get('date_from', '')
+        date_to = request.args.get('date_to', '')
+        sort_order = request.args.get('sort_order', 'asc')
+        analyzer = get_shape_analyzer()
+        df = analyzer.export_master_rows(search, type_filter, date_from, date_to, sort_order)
+        stream = io.StringIO()
+        df.to_csv(stream, index=False)
+        return send_file(
+            io.BytesIO(stream.getvalue().encode('utf-8')),
+            download_name="master_database.csv",
+            as_attachment=True,
+            mimetype="text/csv"
+        )
+    except Exception as e:
+        return jsonify({"error": f"Failed to export master CSV: {str(e)}"}), 500
+
+
+@app.route('/api/explorer/fails', methods=['GET'])
+def get_shape_explorer_fails():
+    try:
+        page = int(request.args.get('page', 1))
+        limit = min(int(request.args.get('limit', 50)), 500)
+        search = request.args.get('search', '')
+        sort_by = request.args.get('sort_by', 'QC_created_date')
+        sort_order = request.args.get('sort_order', 'desc')
+        period = request.args.get('period', 'all')
+        analyzer = get_shape_analyzer()
+        return jsonify(analyzer.get_explorer_fails(page, limit, search, sort_by, sort_order, period))
+    except Exception as e:
+        return jsonify({"error": f"Failed to fetch fails: {str(e)}"}), 500
+
+
+@app.route('/api/explorer/corrections', methods=['GET'])
+def get_shape_explorer_corrections():
+    try:
+        page = int(request.args.get('page', 1))
+        limit = min(int(request.args.get('limit', 50)), 500)
+        search = request.args.get('search', '')
+        sort_by = request.args.get('sort_by', 'timestamp')
+        sort_order = request.args.get('sort_order', 'desc')
+        analyzer = get_shape_analyzer()
+        return jsonify(analyzer.get_explorer_corrections(page, limit, search, sort_by, sort_order))
+    except Exception as e:
+        return jsonify({"error": f"Failed to fetch corrections: {str(e)}"}), 500
+
+
+@app.route('/api/explorer/clusters', methods=['GET'])
+def get_shape_explorer_clusters():
+    try:
+        analyzer = get_shape_analyzer()
+        return jsonify(analyzer.get_explorer_clusters())
+    except Exception as e:
+        return jsonify({"error": f"Failed to fetch clusters: {str(e)}"}), 500
+
+
+@app.route('/api/explorer/pid/<path:pid>', methods=['GET'])
+def get_shape_explorer_pid(pid):
+    try:
+        analyzer = get_shape_analyzer()
+        return jsonify(analyzer.get_explorer_pid_history(pid))
+    except Exception as e:
+        return jsonify({"error": f"Failed to fetch PID history: {str(e)}"}), 500
+
+
+@app.route('/api/explorer/classifications', methods=['GET'])
+def get_shape_explorer_classifications():
+    try:
+        page = int(request.args.get('page', 1))
+        limit = min(int(request.args.get('limit', 50)), 500)
+        search = request.args.get('search', '')
+        sort_by = request.args.get('sort_by', 'pid')
+        sort_order = request.args.get('sort_order', 'asc')
+        status = request.args.get('status', 'all')
+        analyzer = get_shape_analyzer()
+        return jsonify(analyzer.get_explorer_classifications(page, limit, search, sort_by, sort_order, status))
+    except Exception as e:
+        return jsonify({"error": f"Failed to fetch classifications: {str(e)}"}), 500
+
+
+@app.route('/api/manual_corrections', methods=['GET'])
+@app.route('/api/shape/manual_corrections', methods=['GET'])
+def get_shape_manual_corrections():
+    try:
+        analyzer = get_shape_analyzer()
+        return jsonify(analyzer.get_manual_corrections())
+    except Exception as e:
+        return jsonify([])
+
+
+@app.route('/api/manual_corrections', methods=['POST'])
+@app.route('/api/shape/manual_corrections', methods=['POST'])
+def create_shape_manual_correction():
+    req = request.get_json(force=True, silent=True) or {}
+    try:
+        analyzer = get_shape_analyzer()
+        saved = analyzer.save_manual_correction(req)
+        invalidate_shape_cache()
+        updated_analysis = get_cached_shape_metrics()
+        return jsonify({
+            "success": True,
+            "message": f"Manual correction saved for PID {req.get('pid')}.",
+            "entry": saved,
+            "summary": updated_analysis["summary"]
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to save manual correction: {str(e)}"}), 500
+
+
+@app.route('/api/manual_corrections/<entry_id>', methods=['DELETE'])
+@app.route('/api/shape/manual_corrections/<entry_id>', methods=['DELETE'])
+def delete_shape_manual_correction(entry_id):
+    try:
+        analyzer = get_shape_analyzer()
+        ok = analyzer.delete_manual_correction(entry_id)
+        if not ok:
+            return jsonify({"error": "Manual correction entry not found."}), 404
+        invalidate_shape_cache()
+        updated_analysis = get_cached_shape_metrics()
+        return jsonify({
+            "success": True,
+            "message": "Manual correction removed.",
+            "summary": updated_analysis["summary"]
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to delete manual correction: {str(e)}"}), 500
+
+
+@app.route('/api/manual_corrections/<entry_id>/dims', methods=['PATCH'])
+@app.route('/api/shape/manual_corrections/<entry_id>/dims', methods=['PATCH'])
+def update_shape_manual_dims(entry_id):
+    req = request.get_json(force=True, silent=True) or {}
+    try:
+        analyzer = get_shape_analyzer()
+        entry = analyzer.update_manual_dims(entry_id, req)
+        if entry is None:
+            return jsonify({"error": "Only manual entries can be edited (id not found)."}), 404
+        return jsonify({"success": True, "entry": entry})
+    except Exception as e:
+        return jsonify({"error": f"Failed to update dimensions: {str(e)}"}), 500
+
+
+@app.route('/api/impact', methods=['GET'])
+@app.route('/api/shape/impact', methods=['GET'])
+def get_shape_impact():
+    try:
+        analyzer = get_shape_analyzer()
+        return jsonify(analyzer.get_correction_impact())
+    except Exception as e:
+        return jsonify({"error": f"Failed to calculate impact: {str(e)}"}), 500
+
+
+@app.route('/api/impact/check', methods=['GET'])
+@app.route('/api/shape/impact/check', methods=['GET'])
+def get_shape_impact_check():
+    key = request.args.get('key', '')
+    if not key:
+        return jsonify({"error": "Missing key parameter"}), 400
+    try:
+        analyzer = get_shape_analyzer()
+        return jsonify(analyzer.check_pid_invoice(key))
+    except Exception as e:
+        return jsonify({"error": f"Failed to check PID/Invoice: {str(e)}"}), 500
+
+
+@app.route('/api/impact/settings', methods=['POST'])
+@app.route('/api/shape/impact/settings', methods=['POST'])
+def save_shape_impact_settings():
+    req = request.get_json(force=True, silent=True) or {}
+    try:
+        analyzer = get_shape_analyzer()
+        analyzer.update_impact_settings(req)
+        invalidate_shape_cache()
+        return jsonify(analyzer.get_correction_impact())
+    except Exception as e:
+        return jsonify({"error": f"Failed to update impact settings: {str(e)}"}), 500
 
 
 if __name__ == '__main__':
