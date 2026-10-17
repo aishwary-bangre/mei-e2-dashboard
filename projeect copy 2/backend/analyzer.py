@@ -268,7 +268,7 @@ class MEIAnalyzer:
                         self._capture_fail_list(s, df_s)
                         continue
                     pid_cols = [c for c in df_s.columns if 'pid' in str(c).lower()]
-                    date_cols = [c for c in df_s.columns if c in ['%f', 'Date', 'DATE', 'timestamp', 'created_at']]
+                    date_cols = [c for c in df_s.columns if str(c).strip().lower() in ('date', 'timestamp', 'created_at', '%f', 'ct', 'time')]
                     issue_cols = [c for c in df_s.columns if 'issue' in str(c).lower() or 'remark' in str(c).lower()]
                     # The person is in the 'DONE BY' column. (The old 'contains done/by' rule hit 'QC Done (DOT)' first,
                     # a numeric column, which is where the numbers under Tech came from.)
@@ -425,16 +425,22 @@ class MEIAnalyzer:
                     if pd.isna(ts):
                         ts = pd.Timestamp.now()
                     iss_raw = str(item.get('issue_raw', 'Manual Shape Correction'))
+                    corr_type = str(item.get('correction_type', '')).strip().capitalize() or 'Manual'
+                    is_man = (corr_type.lower() != 'traced')
                     rows.append({
                         'id': str(item.get('id', uuid.uuid4().hex[:8])),
                         'pid': clean_pid,
-                        'pid_invoice': str(item.get('pid_invoice') or clean_pid).strip(), 'kind': 'manual',
+                        'pid_invoice': str(item.get('pid_invoice') or clean_pid).strip(),
+                        'kind': corr_type.lower(),
+                        'correction_type': corr_type,
+                        'shift': str(item.get('shift', '')),
+                        'shift_ic': str(item.get('shift_ic', '')),
                         'timestamp': ts,
                         'issue_raw': iss_raw,
                         'issue_normalized': _normalize_correction_issue(iss_raw) or "OTHER SHAPE",
                         'DONE BY': _person_name(item.get('done_by', '')),
                         'sheet': 'Manual Entry (User)',
-                        'is_manual': True,
+                        'is_manual': is_man,
                         'PERCENTAGE': float(item['percentage_dev']) if item.get('percentage_dev') is not None else None,
                         'A': float(item['a']) if item.get('a') is not None else None,
                         'B': float(item['b']) if item.get('b') is not None else None,
@@ -1232,14 +1238,49 @@ class MEIAnalyzer:
         pareto = [{"reason": k, "a": int(ba.get(k, 0)), "b": int(bb.get(k, 0))}
                   for k in sorted(set(ba.index) | set(bb.index), key=lambda k: -(ba.get(k, 0) + bb.get(k, 0)))]
 
-        sa, sb = df_a['shift_bucket'].value_counts(), df_b['shift_bucket'].value_counts()
-        shift = []
-        for sh in self.SHIFT_ORDER:
-            ea, eb = int(sa.get(sh, 0)), int(sb.get(sh, 0))
-            da, db = qa.get('by_shift', {}).get(sh, 0), qb.get('by_shift', {}).get(sh, 0)
-            if ea or eb or da or db:
-                shift.append({"shift": sh, "events_a": ea, "events_b": eb, "qc_a": da, "qc_b": db,
-                              "rate_a": rate(ea, da), "rate_b": rate(eb, db)})
+        # Logged shape corrections per shift (Shift A, Shift B, Shift C)
+        shift_logged = {
+            "Shift A": {"traced": 0, "manual": 0, "total": 0},
+            "Shift B": {"traced": 0, "manual": 0, "total": 0},
+            "Shift C": {"traced": 0, "manual": 0, "total": 0}
+        }
+        if self.df_log is not None and not self.df_log.empty:
+            for _, r in self.df_log.iterrows():
+                s_val = str(r.get('shift', '') or '')
+                sh = None
+                if 'A' in s_val or 'Morning' in s_val:
+                    sh = 'Shift A'
+                elif 'B' in s_val or 'Evening' in s_val:
+                    sh = 'Shift B'
+                elif 'C' in s_val or 'Night' in s_val:
+                    sh = 'Shift C'
+                if not sh:
+                    ts = r.get('timestamp')
+                    if pd.notna(ts):
+                        try:
+                            h = pd.to_datetime(ts).hour
+                            if 6 <= h < 14:
+                                sh = 'Shift A'
+                            elif 14 <= h < 22:
+                                sh = 'Shift B'
+                            else:
+                                sh = 'Shift C'
+                        except Exception:
+                            sh = 'Shift A'
+                    else:
+                        sh = 'Shift A'
+                is_manual = bool(r.get('is_manual', False)) or str(r.get('kind', '')).lower() == 'manual' or str(r.get('correction_type', '')).lower() == 'manual'
+                if is_manual:
+                    shift_logged[sh]["manual"] += 1
+                else:
+                    shift_logged[sh]["traced"] += 1
+                shift_logged[sh]["total"] += 1
+
+        shift = [
+            {"shift": "Shift A", "shift_label": "Shift A (06:00-14:00)", "total": shift_logged["Shift A"]["total"], "traced": shift_logged["Shift A"]["traced"], "manual": shift_logged["Shift A"]["manual"]},
+            {"shift": "Shift B", "shift_label": "Shift B (14:00-22:00)", "total": shift_logged["Shift B"]["total"], "traced": shift_logged["Shift B"]["traced"], "manual": shift_logged["Shift B"]["manual"]},
+            {"shift": "Shift C", "shift_label": "Shift C (22:00-06:00)", "total": shift_logged["Shift C"]["total"], "traced": shift_logged["Shift C"]["traced"], "manual": shift_logged["Shift C"]["manual"]}
+        ]
 
         action = sorted([c for c in classified if c['classification'] in ('Recurred', 'Pending')],
                         key=lambda c: (-c['fail_events_b'], -c['fail_event_count']))[:15]

@@ -525,15 +525,59 @@
 <div class="app-container">
 
         <!-- Header -->
-        <header class="app-header" style="display: flex; flex-direction: column; gap: 10px; padding: 12px 20px;">
-            <!-- Top Row: Brand & Main Nav Tabs -->
+        <header class="app-header header-bar" style="display: flex; flex-direction: column; gap: 8px; padding: 10px 18px;">
+            <!-- Top Row: Brand & Header Controls -->
             <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-wrap: wrap; gap: 12px;">
-                <div class="logo-container" style="display: flex; align-items: center; gap: 12px;">
+                <div class="logo-container" style="display: flex; align-items: center; gap: 10px;">
                     <div class="logo-orb"></div>
                     <div class="header-text">
                         <h1 style="font-size: 1.15rem; margin: 0; line-height: 1.2; font-weight: 700;">MEI Shape Correction</h1>
                         <p class="subtitle" style="font-size: 0.72rem; margin: 0; color: var(--text-muted);">Machine Failure Root Cause Analytics</p>
                     </div>
+                </div>
+
+                <!-- Shape Header Select Groups: Shift, Shift IC, Operator (Identical to E2) -->
+                <div class="header-stats" style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                    <!-- Shift Selector -->
+                    <div class="header-select-group" style="display: flex; align-items: center; gap: 6px; white-space: nowrap;">
+                        <label for="scHeaderShift" style="font-size: 0.75rem; color: var(--text-muted); font-weight: 700;">SHIFT:</label>
+                        <select id="scHeaderShift">
+                            <option value="Shift A">Shift A</option>
+                            <option value="Shift B">Shift B</option>
+                            <option value="Shift C">Shift C</option>
+                        </select>
+                    </div>
+
+                    <!-- Shift IC Selector + Gear Button -->
+                    <div class="header-select-group" style="display: flex; align-items: center; gap: 6px; white-space: nowrap;">
+                        <label for="scHeaderShiftIc" style="font-size: 0.75rem; color: var(--text-muted); font-weight: 700;">SHIFT IC:</label>
+                        <select id="scHeaderShiftIc" required></select>
+                        <button type="button" class="btn-manage-icon" onclick="openOptionsModal('shift_ic', 'SHIFT IC (SUPERVISOR)')" title="Edit/Add Options" style="font-size: 0.8rem; padding: 1px 3px; border: none; background: transparent; cursor: pointer;">⚙️</button>
+                    </div>
+
+                    <!-- Operator Selector + Gear Button -->
+                    <div class="header-select-group" style="display: flex; align-items: center; gap: 6px; white-space: nowrap;">
+                        <label for="scHeaderOperator" style="font-size: 0.75rem; color: var(--text-muted); font-weight: 700;">OPERATOR:</label>
+                        <select id="scHeaderOperator" required></select>
+                        <button type="button" class="btn-manage-icon" onclick="openOptionsModal('operator', 'OPERATOR')" title="Edit/Add Options" style="font-size: 0.8rem; padding: 1px 3px; border: none; background: transparent; cursor: pointer;">⚙️</button>
+                    </div>
+
+                    <!-- Theme Toggle Button -->
+                    <button class="btn-theme-toggle" onclick="toggleTheme()" title="Toggle Light/Dark Theme" style="padding: 6px; width: 32px; height: 32px; justify-content: center; font-size: 1.1rem; border-radius: 50%;">
+                        ☀️
+                    </button>
+                </div>
+            </div>
+
+            <!-- Sub Row: Switcher on Left + Nav Tabs on Right (Side-by-Side in 1 line) -->
+            <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-wrap: wrap; gap: 10px;">
+                <div class="system-switcher-nav" style="display: inline-flex; align-items: center;">
+                    <button type="button" class="system-switch-btn" onclick="switchSystem('e2')">
+                        📊 MEI E2 Escalation
+                    </button>
+                    <button type="button" class="system-switch-btn active" onclick="switchSystem('shape')">
+                        📐 Shape Correction
+                    </button>
                 </div>
 
                 <!-- Main Navigation Tabs -->
@@ -549,22 +593,18 @@
                     </button>
                 </nav>
             </div>
-
-            <!-- Sub Row: Switcher Pills Placed Below (Exact Matching Position with E2) -->
-            <div class="system-switcher-nav" style="display: inline-flex; align-items: center; align-self: flex-start;">
-                <button type="button" class="system-switch-btn" onclick="switchSystem('e2')">
-                    📊 MEI E2 Escalation
-                </button>
-                <button type="button" class="system-switch-btn active" onclick="switchSystem('shape')">
-                    📐 Shape Correction
-                </button>
-            </div>
         </header>
 
         <!-- 500,000 Row Boundary Cap Warning Banner -->
         <div class="warning-banner hidden" id="row-cap-warning-banner">
             <span class="warning-icon">⚠️</span>
             <span class="warning-text"><strong>Warning:</strong> an export hit its row limit, so totals may undercount.</span>
+        </div>
+
+        <!-- Live Loading Status Banner -->
+        <div class="sc-loading-banner hidden" id="sc-global-loading">
+            <span class="sc-spinner"></span>
+            <span id="sc-global-loading-text">Loading Shape Correction Data...</span>
         </div>
 
         <!-- ==================================================== -->
@@ -576,26 +616,14 @@
             <!-- CONTROL STRIP: Data Sources, Date Filter, Exports       -->
             <!-- ====================================================== -->
             <section class="sc-control-strip glass-card" id="sc-control-strip">
-                <!-- Row 1: Period uploads + Import + Date filter -->
+                <!-- Row 1: QC Data Status + Import + Date filter -->
                 <div class="sc-ctrl-row sc-ctrl-row-top">
-                    <!-- Period A / B Drop zones (compact) -->
-                    <div class="sc-period-zones">
-                        <div class="sc-dropzone-compact" id="dropzone-period-a">
-                            <span class="sc-drop-icon">📁</span>
-                            <div class="sc-drop-text">
-                                <span class="sc-drop-label">Period A</span>
-                                <span class="sc-drop-status" id="lbl-period-a-status">Drop or click</span>
-                            </div>
-                            <input type="file" id="input-period-a" accept=".xlsx,.xls" hidden />
-                        </div>
-                        <span class="sc-period-arrow">→</span>
-                        <div class="sc-dropzone-compact" id="dropzone-period-b">
-                            <span class="sc-drop-icon">📁</span>
-                            <div class="sc-drop-text">
-                                <span class="sc-drop-label">Period B</span>
-                                <span class="sc-drop-status" id="lbl-period-b-status">Drop or click</span>
-                            </div>
-                            <input type="file" id="input-period-b" accept=".xlsx,.xls" hidden />
+                    <!-- QC Data Status (replaces old Period A/B dropzones) -->
+                    <div class="sc-qc-status-card" id="sc-qc-status-card">
+                        <span class="sc-qc-icon">📊</span>
+                        <div class="sc-qc-text">
+                            <span class="sc-qc-label">QC Data Source</span>
+                            <span class="sc-qc-value" id="lbl-qc-source">Loading...</span>
                         </div>
                     </div>
 
@@ -606,15 +634,15 @@
                         <button class="btn btn-accent-outline" id="btn-import-corrections">
                             📥 Import Correction Sheet
                         </button>
-                        <span class="sc-drop-status" id="lbl-import-status"></span>
+                        <span class="sc-drop-status" id="lbl-import-status">Checking sheet...</span>
                         <input type="file" id="input-import-corrections" accept=".xlsx,.xls" hidden />
                     </div>
 
                     <div class="sc-ctrl-divider"></div>
 
-                    <!-- Date Range Filter -->
+                    <!-- Date Range Filter (filters corrections by CT date) -->
                     <div class="sc-date-filter">
-                        <span class="sc-filter-label">📅 Filter QC Date</span>
+                        <span class="sc-filter-label">📅 Correction Date (CT)</span>
                         <input type="date" id="sc-date-from" class="sc-date-input" title="From date" />
                         <span class="sc-date-sep">–</span>
                         <input type="date" id="sc-date-to" class="sc-date-input" title="To date" />
@@ -623,12 +651,12 @@
                     </div>
                 </div>
 
-                <!-- Row 2: Period labels + Exports -->
+                <!-- Row 2: QC Info + Correction sheet status + Exports -->
                 <div class="sc-ctrl-row sc-ctrl-row-bottom">
                     <div class="sc-period-labels">
-                        <span><span class="period-dot past"></span> Period A: <strong id="lbl-past-period">N/A</strong></span>
-                        <span class="sc-period-arrow">→</span>
-                        <span><span class="period-dot this"></span> Period B: <strong id="lbl-this-period">N/A</strong></span>
+                        <span><span class="period-dot this" style="background:#00b0ff"></span> QC Source: <strong id="lbl-past-period">Loading...</strong></span>
+                        <span class="sc-period-sep">•</span>
+                        <span><span class="period-dot corr" id="dot-corr-status"></span> Correction Sheet: <strong id="lbl-corr-sheet-info">Checking...</strong></span>
                     </div>
                     <div class="sc-exports">
                         <span class="sc-filter-label">Export:</span>
@@ -660,6 +688,13 @@
                             <label class="sc-log-label">PID / Invoice <span class="req">*</span></label>
                             <input type="text" id="sc-log-pid" class="sc-log-input" placeholder="e.g. 219754.INV123" />
                         </div>
+                        <div class="sc-log-field" style="min-width: 110px;">
+                            <label class="sc-log-label">Type <span class="req">*</span></label>
+                            <select id="sc-log-type" class="sc-log-input">
+                                <option value="Traced" selected>Traced</option>
+                                <option value="Manual">Manual</option>
+                            </select>
+                        </div>
                         <div class="sc-log-field sc-log-field-wide">
                             <label class="sc-log-label">Issue / Reason <span class="req">*</span></label>
                             <select id="sc-log-issue" class="sc-log-input">
@@ -671,29 +706,6 @@
                                 <option value="Rough cutting / bad cut">Rough cutting / bad cut</option>
                                 <option value="Wrong axis">Wrong axis</option>
                                 <option value="OTHER">Other (custom)</option>
-                            </select>
-                        </div>
-                        <div class="sc-log-field">
-                            <label class="sc-log-label">Shift IC</label>
-                            <select id="sc-log-shift-ic" class="sc-log-input" data-persist="sc_shift_ic">
-                                <option value="ADITI">ADITI</option>
-                                <option value="JANHVI">JANHVI</option>
-                                <option value="PRANJAL">PRANJAL</option>
-                                <option value="JATIN">JATIN</option>
-                                <option value="YUVRAJ">YUVRAJ</option>
-                            </select>
-                        </div>
-                        <div class="sc-log-field">
-                            <label class="sc-log-label">Operator</label>
-                            <select id="sc-log-operator" class="sc-log-input" data-persist="sc_operator">
-                                <option value="AMIRUN">AMIRUN</option>
-                                <option value="DHAVAL">DHAVAL</option>
-                                <option value="DIPANSHU">DIPANSHU</option>
-                                <option value="DEVENDRA">DEVENDRA</option>
-                                <option value="PRACHI">PRACHI</option>
-                                <option value="GITANJALI">GITANJALI</option>
-                                <option value="RAKESH">RAKESH</option>
-                                <option value="VIVEK">VIVEK</option>
                             </select>
                         </div>
                         <div class="sc-log-field sc-log-field-ts">
@@ -744,6 +756,50 @@
                 </div>
             </section>
 
+            <!-- ====================================================== -->
+            <!-- LIVE CORRECTION LOG TABLE (Display logged entries)      -->
+            <!-- ====================================================== -->
+            <section class="glass-card sc-recent-card" id="sc-recent-corrections-card">
+                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 0.75rem;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <h2 style="font-size: 1rem; margin: 0; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;">
+                            📋 Shape Corrections Log
+                        </h2>
+                        <span class="badge" id="sc-recent-count" style="font-size: 0.72rem; padding: 2px 8px; border-radius: 12px; background: rgba(59, 130, 246, 0.2); color: #60a5fa;">0 entries</span>
+                    </div>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <button type="button" class="btn btn-export-sm" id="btn-export-log-card" style="display: inline-flex; align-items: center; gap: 6px;">
+                            📄 Export Log (.xlsx)
+                        </button>
+                        <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-recent-log" title="Refresh Log" style="padding: 4px 8px;">
+                            🔄
+                        </button>
+                    </div>
+                </div>
+                <div class="table-scroll" style="max-height: 280px; overflow-y: auto;">
+                    <table class="data-table" id="sc-recent-table" style="width: 100%; border-collapse: collapse;">
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>PID / Invoice</th>
+                                <th>Type</th>
+                                <th>Issue / Reason</th>
+                                <th>Operator</th>
+                                <th>Invoice</th>
+                                <th>Before (A/B/CR/CL)</th>
+                                <th>After (A1/B1/CR1/CL1)</th>
+                                <th>% Dev</th>
+                                <th>Notes</th>
+                                <th style="text-align: center;">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sc-recent-tbody">
+                            <tr><td colspan="11" class="text-center text-muted" style="padding: 16px;">Loading corrections log...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
             <!-- KPI Cards Grid (5 main cards) -->
             <section class="kpi-grid">
                 <div class="glass-card kpi-card kpi-rate-card">
@@ -781,29 +837,29 @@
             <section class="charts-grid">
                 <div class="glass-card chart-container span-2">
                     <div class="chart-header">
-                        <h3>Shape Failures by Issue: Period A vs B</h3>
-                        <p class="chart-sub">Lenses failed per issue. Shows which shape problem is growing or shrinking.</p>
+                        <h3>Top Failure Reasons (Period B)</h3>
+                        <p class="chart-sub">Machine failure reasons strictly in Period B (sorted worst first)</p>
                     </div>
-                    <div id="chart-pareto" class="plotly-wrapper"></div>
+                    <div id="chart-period-b-reasons" class="plotly-wrapper"></div>
                 </div>
                 <div class="glass-card chart-container">
                     <div class="chart-header">
-                        <h3>Fail Rate by Shift</h3>
-                        <p class="chart-sub">% of lenses QC'd that failed, by the shift the lens was cut in</p>
+                        <h3>Logged Corrections by Shift</h3>
+                        <p class="chart-sub">Number of shape corrections logged per shift (Traced vs Manual)</p>
                     </div>
                     <div id="chart-shift-drift" class="plotly-wrapper"></div>
                 </div>
                 <div class="glass-card chart-container">
                     <div class="chart-header">
                         <h3>Correction Outcome</h3>
-                        <p class="chart-sub">What happened to the PIDs that failed in Period A</p>
+                        <p class="chart-sub">Click a slice (e.g. Yellow / Pending) to filter PIDs below</p>
                     </div>
                     <div id="chart-correction-eff" class="plotly-wrapper"></div>
                 </div>
                 <div class="glass-card chart-container span-all">
                     <div class="chart-header">
-                        <h3>PIDs Needing Action</h3>
-                        <p class="chart-sub">Recurred and Pending PIDs, worst first (by Period B failures). Click a PID for its full history.</p>
+                        <h3 id="action-table-title">PIDs Needing Action</h3>
+                        <p class="chart-sub" id="action-table-sub">Recurred and Pending PIDs, worst first (by Period B failures). Click a PID for its full history.</p>
                     </div>
                     <div class="table-scroll">
                         <table>
@@ -917,9 +973,6 @@
                 <button class="subtab-btn" id="subtab-fails">
                     <span>📁 Raw QC Fails</span>
                 </button>
-                <button class="subtab-btn" id="subtab-corrections">
-                    <span>📝 Correction Log</span>
-                </button>
             </div>
 
             <!-- Sub-View 0: Master Database (everything, first entry to last) -->
@@ -962,7 +1015,7 @@
                                     <th class="sortable" data-sort="date">Date <span class="sort-icon">↕</span></th>
                                     <th>PID.Invoice</th>
                                     <th>Reason</th>
-                                    <th>Machine / Person</th>
+                                    <th>QC Person / Employee</th>
                                     <th>Details</th>
                                     <th>Source</th>
                                 </tr>
@@ -1031,8 +1084,8 @@
                             </div>
                         </div>
                         <div class="pid-summary-actions">
-                            <button class="btn btn-success" id="btn-pid-add-correction">
-                                <span>+ Log Correction</span>
+                            <button type="button" class="btn btn-primary" onclick="focusMainLogForm(currentLookupPID)">
+                                <span>✏️ Fill Log Form</span>
                             </button>
                         </div>
                     </div>
@@ -1114,7 +1167,7 @@
                                     <th class="sortable" data-sort="pid">PID <span class="sort-icon">↕</span></th>
                                     <th class="sortable" data-sort="classification">Status <span class="sort-icon">↕</span></th>
                                     <th class="sortable" data-sort="reason_cluster">Reason <span class="sort-icon">↕</span></th>
-                                    <th class="sortable" data-sort="qc_person_id">Machine <span class="sort-icon">↕</span></th>
+                                    <th class="sortable" data-sort="qc_person_id">QC Person / Employee <span class="sort-icon">↕</span></th>
                                     <th>Events</th>
                                     <th class="sortable" data-sort="first_fail_timestamp">First Fail <span class="sort-icon">↕</span></th>
                                     <th>Detail</th>
@@ -1169,7 +1222,7 @@
                                     <th class="sortable" data-sort="period">Period <span class="sort-icon">↕</span></th>
                                     <th class="sortable" data-sort="QC_created_date">Date <span class="sort-icon">↕</span></th>
                                     <th>Reason</th>
-                                    <th class="sortable" data-sort="qc_person_id">Machine <span class="sort-icon">↕</span></th>
+                                    <th class="sortable" data-sort="qc_person_id">QC Person / Employee <span class="sort-icon">↕</span></th>
                                     <th>Vendor</th>
                                 </tr>
                             </thead>
@@ -1187,150 +1240,10 @@
                     </div>
                 </div>
             </div>
-
-            <!-- Sub-View 5: Correction Log Table -->
-            <div id="exp-panel-corrections" class="explorer-panel hidden">
-                <div class="glass-card table-control-card">
-                    <div class="table-controls-row">
-                        <input type="text" id="exp-corr-search" placeholder="Search PID, invoice, issue, person..." class="search-input" />
-                        <button class="btn btn-success" id="btn-open-manual-corr-modal">+ Log Correction</button>
-                        <select id="exp-corr-limit" class="select-input">
-                            <option value="50" selected>50</option>
-                            <option value="100">100</option>
-                        </select>
-                    </div>
-                    <div class="table-scroll">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th class="sortable" data-sort="pid">PID.Invoice <span class="sort-icon">↕</span></th>
-                                    <th class="sortable" data-sort="timestamp">Date <span class="sort-icon">↕</span></th>
-                                    <th>Sheet</th>
-                                    <th>Issue</th>
-                                    <th>Normalized</th>
-                                    <th>Before</th>
-                                    <th>After</th>
-                                    <th class="sortable" data-sort="done_by">Person Involved <span class="sort-icon">↕</span></th>
-                                    <th>Update</th>
-                                </tr>
-                            </thead>
-                            <tbody id="exp-corr-tbody">
-                            </tbody>
-                        </table>
-                    </div>
-                    <div class="pagination-bar">
-                        <span class="pagination-info" id="exp-corr-page-info">0 of 0</span>
-                        <div class="pagination-buttons">
-                            <button id="exp-corr-prev" class="btn btn-sm btn-secondary">Prev</button>
-                            <span class="page-number" id="exp-corr-page-num">1</span>
-                            <button id="exp-corr-next" class="btn btn-sm btn-secondary">Next</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
         </div>
     </div>
 
-    <!-- Manual Physical Correction Entry Modal -->
-    <div class="modal-overlay hidden" id="manual-correction-modal">
-        <div class="glass-card modal-card modal-lg">
-            <div class="modal-header">
-                <div>
-                    <h3 id="manual-modal-title">Log Physical Shape Correction</h3>
-                    <p class="modal-subtitle">Save correction entry to update analysis live</p>
-                </div>
-                <button class="btn-close" id="btn-close-manual-modal">✕</button>
-            </div>
-            <form id="form-manual-correction" class="modal-form">
-                <input type="hidden" id="manual-entry-id" />
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="manual-pid">PID.Invoice <span class="req">*</span></label>
-                        <input type="text" id="manual-pid" required placeholder="e.g. 219754.INV123" class="form-input" />
-                    </div>
-                    <div class="form-group">
-                        <label for="manual-shift-ic">Shift IC</label>
-                        <select id="manual-shift-ic" class="form-input">
-                            <option value="ADITI">ADITI</option>
-                            <option value="JANHVI">JANHVI</option>
-                            <option value="PRANJAL">PRANJAL</option>
-                            <option value="JATIN">JATIN</option>
-                            <option value="YUVRAJ">YUVRAJ</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="manual-done-by">Person Involved</label>
-                        <select id="manual-done-by" class="form-input">
-                            <option value="QC Lead">QC Lead</option>
-                            <option value="AMIRUN">AMIRUN</option>
-                            <option value="DHAVAL">DHAVAL</option>
-                            <option value="DIPANSHU">DIPANSHU</option>
-                            <option value="DEVENDRA">DEVENDRA</option>
-                            <option value="PRACHI">PRACHI</option>
-                            <option value="GITANJALI">GITANJALI</option>
-                            <option value="RAKESH">RAKESH</option>
-                            <option value="VIVEK">VIVEK</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="manual-timestamp">Date</label>
-                        <input type="datetime-local" id="manual-timestamp" class="form-input" />
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group span-2">
-                        <label for="manual-issue-select">Correction Reason</label>
-                        <select id="manual-issue-select" class="form-input">
-                            <option value="Wrong shape cut by machine">Wrong shape cut by machine</option>
-                            <option value="SMALL SIZE CUT BY MACHINE">SMALL SIZE CUT BY MACHINE</option>
-                            <option value="Lens Big Size issue">Lens Big Size issue</option>
-                            <option value="Lens slip by machine">Lens slip by machine</option>
-                            <option value="__custom__">-- Custom --</option>
-                        </select>
-                        <input type="text" id="manual-issue-custom" placeholder="Custom reason..." class="form-input hidden mt-2" />
-                    </div>
-                    <div class="form-group">
-                        <label for="manual-percentage-dev">% Deviation</label>
-                        <input type="number" step="0.01" id="manual-percentage-dev" placeholder="-1.25" class="form-input" />
-                    </div>
-                </div>
-                <div class="form-section-title"><span>Dimensions (mm)</span></div>
-                <div class="form-row-dimensions">
-                    <div class="dim-column">
-                        <h4>Before</h4>
-                        <div class="dim-inputs-grid">
-                            <div class="form-group"><label>A</label><input type="number" step="0.01" id="manual-dim-a" class="form-input" /></div>
-                            <div class="form-group"><label>B</label><input type="number" step="0.01" id="manual-dim-b" class="form-input" /></div>
-                            <div class="form-group"><label>CIRC R</label><input type="number" step="0.01" id="manual-dim-circ-r" class="form-input" /></div>
-                            <div class="form-group"><label>CIRC L</label><input type="number" step="0.01" id="manual-dim-circ-l" class="form-input" /></div>
-                        </div>
-                    </div>
-                    <div class="dim-arrow">➔</div>
-                    <div class="dim-column">
-                        <h4>After</h4>
-                        <div class="dim-inputs-grid">
-                            <div class="form-group"><label>A1</label><input type="number" step="0.01" id="manual-dim-a1" class="form-input" /></div>
-                            <div class="form-group"><label>B1</label><input type="number" step="0.01" id="manual-dim-b1" class="form-input" /></div>
-                            <div class="form-group"><label>CIRC R1</label><input type="number" step="0.01" id="manual-dim-circ-r1" class="form-input" /></div>
-                            <div class="form-group"><label>CIRC L1</label><input type="number" step="0.01" id="manual-dim-circ-l1" class="form-input" /></div>
-                        </div>
-                    </div>
-                </div>
-                <div class="form-row mt-3">
-                    <div class="form-group"><label for="manual-before-qc">QC done before (optional)</label><input type="number" id="manual-before-qc" class="form-input" placeholder="blank = from QC data" /></div>
-                    <div class="form-group"><label for="manual-before-fails">MEI fails before (optional)</label><input type="number" id="manual-before-fails" class="form-input" placeholder="blank = from QC data" /></div>
-                </div>
-                <div class="form-group mt-3">
-                    <label for="manual-notes">Notes</label>
-                    <input type="text" id="manual-notes" placeholder="Calibration remarks..." class="form-input" />
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" id="btn-cancel-manual-modal">Cancel</button>
-                    <button type="submit" class="btn btn-primary" id="btn-submit-manual-correction">Save &amp; Recalculate</button>
-                </div>
-            </form>
-        </div>
-    </div>
+
     <!-- Drilldown Modal -->
     <div class="modal-overlay hidden" id="drilldown-modal">
         <div class="glass-card modal-card">

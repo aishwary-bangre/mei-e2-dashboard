@@ -84,28 +84,25 @@ function autoSelectCurrentShift() {
 // -----------------------------------------------------------------------------
 function initTheme() {
     const savedTheme = localStorage.getItem('mei_theme') || 'dark';
-    const btn = document.getElementById('btnThemeToggle');
-    if (savedTheme === 'light') {
+    const isLight = savedTheme === 'light';
+    if (isLight) {
         document.body.classList.add('light-theme');
-        if (btn) btn.innerHTML = '☀️';
     } else {
         document.body.classList.remove('light-theme');
-        if (btn) btn.innerHTML = '🌙';
     }
+    document.querySelectorAll('.btn-theme-toggle').forEach(btn => {
+        btn.innerHTML = isLight ? '☀️' : '🌙';
+    });
 }
 
 function toggleTheme() {
     const isLight = document.body.classList.toggle('light-theme');
-    const btn = document.getElementById('btnThemeToggle');
-    if (isLight) {
-        if (btn) btn.innerHTML = '☀️';
-        localStorage.setItem('mei_theme', 'light');
-    } else {
-        if (btn) btn.innerHTML = '🌙';
-        localStorage.setItem('mei_theme', 'dark');
-    }
-    if (activeTab === 'tab3' && typeof renderAllShapeCharts === 'function' && globalShapeData) {
-        renderAllShapeCharts(globalShapeData);
+    localStorage.setItem('mei_theme', isLight ? 'light' : 'dark');
+    document.querySelectorAll('.btn-theme-toggle').forEach(btn => {
+        btn.innerHTML = isLight ? '☀️' : '🌙';
+    });
+    if (typeof renderAllShapeCharts === 'function') {
+        renderAllShapeCharts();
     }
 }
 

@@ -16,9 +16,10 @@ function initShapeCorrectionTab() {
         setupMainTabs();
         setupExplorerSubtabs();
         setupExplorerControls();
-        setupManualCorrectionModal();
+        setupRecentCorrectionsLog();
         setupControlStrip();
         setupLoggingStrip();
+        setupShapeHeaderControls();
 
         const btnClose = document.getElementById('btn-close-modal');
         if (btnClose) {
@@ -30,6 +31,7 @@ function initShapeCorrectionTab() {
         shapeCorrectionInitialized = true;
     }
     checkStatus();
+    loadRecentCorrections();
 }
 
 function switchShapeSubView(viewId) {
@@ -50,6 +52,74 @@ document.addEventListener('DOMContentLoaded', () => {
         initShapeCorrectionTab();
     }
 });
+
+// =====================
+// SHAPE HEADER CONTROLS
+// =====================
+function setupShapeHeaderControls() {
+    // 1. Shift: Auto-select current shift based on hour or restore from localStorage
+    const shiftSel = document.getElementById('scHeaderShift');
+    if (shiftSel) {
+        const savedShift = localStorage.getItem('sc_shift');
+        if (savedShift) {
+            shiftSel.value = savedShift;
+        } else {
+            const hour = new Date().getHours();
+            if (hour >= 6 && hour < 14) shiftSel.value = 'Shift A';
+            else if (hour >= 14 && hour < 22) shiftSel.value = 'Shift B';
+            else shiftSel.value = 'Shift C';
+        }
+        shiftSel.addEventListener('change', () => {
+            localStorage.setItem('sc_shift', shiftSel.value);
+        });
+    }
+
+    // 2. Populate Shift IC & Operator dropdowns
+    populateShapeHeaderDropdowns();
+}
+
+async function populateShapeHeaderDropdowns() {
+    let opts = (typeof cachedDropdownOptions !== 'undefined' && cachedDropdownOptions) ? cachedDropdownOptions : null;
+    if (!opts || !opts.shift_ic || !opts.operator) {
+        try {
+            const res = await fetch('/api/options');
+            const data = await res.json();
+            if (data.success && data.options) {
+                opts = data.options;
+                if (typeof cachedDropdownOptions !== 'undefined') {
+                    cachedDropdownOptions = opts;
+                }
+            }
+        } catch (e) {
+            console.error('Failed to load options for shape header:', e);
+        }
+    }
+
+    const shiftIcSel = document.getElementById('scHeaderShiftIc');
+    if (shiftIcSel && opts && opts.shift_ic) {
+        const curVal = localStorage.getItem('sc_shift_ic') || shiftIcSel.value;
+        shiftIcSel.innerHTML = opts.shift_ic.map(o => `<option value="${o}">${o}</option>`).join('');
+        if (curVal && opts.shift_ic.includes(curVal)) {
+            shiftIcSel.value = curVal;
+        } else if (opts.shift_ic.length > 0) {
+            shiftIcSel.value = opts.shift_ic[0];
+        }
+        shiftIcSel.onchange = () => localStorage.setItem('sc_shift_ic', shiftIcSel.value);
+    }
+
+    const opSel = document.getElementById('scHeaderOperator');
+    if (opSel && opts && opts.operator) {
+        const curVal = localStorage.getItem('sc_operator') || opSel.value;
+        opSel.innerHTML = opts.operator.map(o => `<option value="${o}">${o}</option>`).join('');
+        if (curVal && opts.operator.includes(curVal)) {
+            opSel.value = curVal;
+        } else if (opts.operator.length > 0) {
+            opSel.value = opts.operator[0];
+        }
+        opSel.onchange = () => localStorage.setItem('sc_operator', opSel.value);
+    }
+}
+window.populateShapeHeaderDropdowns = populateShapeHeaderDropdowns;
 
 // =====================
 // CONTROL STRIP SETUP
@@ -152,18 +222,28 @@ function setupLoggingStrip() {
 }
 
 async function uploadImportCorrections(file, statusEl) {
-    if (statusEl) statusEl.textContent = `Importing ${file.name}...`;
+    const importBtn = document.getElementById('btn-import-corrections');
+    const origText = importBtn ? importBtn.innerHTML : '📥 Import Correction Sheet';
+    if (importBtn) { importBtn.disabled = true; importBtn.innerHTML = '⏳ Importing...'; }
+    if (statusEl) statusEl.innerHTML = `<span style="color:#38bdf8;">⏳ Uploading ${escHtml(file.name)}...</span>`;
+    showScLoading(`Importing ${file.name}: Parsing 'Tracing New Correction' sheet...`);
+
     const formData = new FormData();
     formData.append('file', file);
     try {
         const res = await fetch('/api/shape/import_corrections', { method: 'POST', body: formData });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.error || 'Import failed');
-        if (statusEl) statusEl.textContent = `✓ ${data.imported} imported, ${data.skipped} skipped`;
-        await fetchMetrics();
+        if (statusEl) statusEl.innerHTML = `<span style="color:#10b981; font-weight:600;">✓ ${data.imported} imported</span> <span style="color:var(--text-muted);">(${data.skipped} skipped)</span>`;
+        showScLoading("Updating metrics and recalculating correction impact...");
+        await checkStatus();
+        await loadRecentCorrections();
     } catch (e) {
-        if (statusEl) statusEl.textContent = `✗ ${e.message}`;
+        if (statusEl) statusEl.innerHTML = `<span style="color:#ef4444;">✗ ${escHtml(e.message)}</span>`;
         alert(`Import failed: ${e.message}`);
+    } finally {
+        if (importBtn) { importBtn.disabled = false; importBtn.innerHTML = origText; }
+        hideScLoading();
     }
 }
 
@@ -171,12 +251,15 @@ async function saveInlineCorrection() {
     const pid = (document.getElementById('sc-log-pid').value || '').trim();
     if (!pid) { showLogFeedback('PID / Invoice is required.', 'error'); return; }
 
+    const correctionType = (document.getElementById('sc-log-type') || {}).value || 'Traced';
+
     const issueRaw = document.getElementById('sc-log-issue').value === 'OTHER'
         ? (document.getElementById('sc-log-issue-custom').value.trim() || 'Other')
         : document.getElementById('sc-log-issue').value;
 
-    const shiftIc  = document.getElementById('sc-log-shift-ic').value;
-    const operator = document.getElementById('sc-log-operator').value;
+    const shift    = (document.getElementById('scHeaderShift') || {}).value || 'Shift A';
+    const shiftIc  = (document.getElementById('scHeaderShiftIc') || {}).value || '';
+    const operator = (document.getElementById('scHeaderOperator') || {}).value || '';
     const ts       = document.getElementById('sc-log-timestamp').value;
 
     const floatOrNull = (id) => {
@@ -187,9 +270,11 @@ async function saveInlineCorrection() {
 
     const payload = {
         pid, pid_invoice: pid,
+        correction_type: correctionType,
         issue_raw: issueRaw,
-        done_by: operator,
+        shift: shift,
         shift_ic: shiftIc,
+        done_by: operator,
         timestamp: ts ? ts.replace('T', ' ') + ':00' : null,
         percentage_dev: floatOrNull('sc-dim-dev'),
         a:  floatOrNull('sc-dim-a'),  b:  floatOrNull('sc-dim-b'),
@@ -225,6 +310,7 @@ async function saveInlineCorrection() {
             if (t) { t.classList.remove('active'); t.textContent = '+ Dimensions'; }
         }
         showLogFeedback(`✓ Correction saved for PID ${pid}`, 'success');
+        await loadRecentCorrections();
         await fetchMetrics();
         if (currentLookupPID && currentLookupPID === pid) fetchPIDHistory(pid);
     } catch (e) {
@@ -246,18 +332,38 @@ function showLogFeedback(msg, type) {
 
 
 // =====================
+// LOADING BANNER HELPERS
+// =====================
+function showScLoading(text) {
+    const banner = document.getElementById('sc-global-loading');
+    const label = document.getElementById('sc-global-loading-text');
+    if (banner && label) {
+        label.textContent = text || 'Loading Shape Correction Data...';
+        banner.classList.remove('hidden');
+    }
+}
+
+function hideScLoading() {
+    const banner = document.getElementById('sc-global-loading');
+    if (banner) banner.classList.add('hidden');
+}
+
+// =====================
 // STATUS & DATA LOADING
 // =====================
 async function checkStatus() {
+    showScLoading("Checking shape analyzer & correction data...");
     try {
         const res = await fetch('/api/status');
         const data = await res.json();
         if (data.uploaded) {
             updateLabels(data);
-            fetchMetrics();
+            await fetchMetrics();
         }
     } catch (e) {
         console.error("Status check failed:", e);
+    } finally {
+        hideScLoading();
     }
 }
 
@@ -273,6 +379,26 @@ function updateLabels(data) {
         if (elThis) elThis.innerText = data.week_this_label;
         const elStatB = document.getElementById('lbl-period-b-status');
         if (elStatB) elStatB.innerText = `Loaded: ${data.week_this_label}`;
+    }
+
+    // Update Correction Sheet indicator
+    if (data.correction_sheet) {
+        const cs = data.correction_sheet;
+        const dotEl = document.getElementById('dot-corr-status');
+        const infoEl = document.getElementById('lbl-corr-sheet-info');
+        const importStatusEl = document.getElementById('lbl-import-status');
+        if (cs.loaded) {
+            if (dotEl) { dotEl.className = 'period-dot corr'; dotEl.style.background = '#10b981'; }
+            if (infoEl) { infoEl.innerHTML = `<span style="color:#10b981; font-weight:600;">Loaded (${cs.rows_count} rows • ${escHtml(cs.sheet_name)})</span>`; }
+            if (importStatusEl) {
+                importStatusEl.innerHTML = `<span style="color:#10b981; font-weight:600;">✓ Active:</span> ${escHtml(cs.file_name)} (${cs.rows_count} rows)`;
+                importStatusEl.title = `File: ${cs.file_name}\nSheet: ${cs.sheet_name}\nRows: ${cs.rows_count}\nTotal Logged: ${cs.total_corrections}`;
+            }
+        } else {
+            if (dotEl) { dotEl.className = 'period-dot corr-missing'; dotEl.style.background = '#f59e0b'; }
+            if (infoEl) { infoEl.innerHTML = `<span style="color:#f59e0b;">Not Loaded (Click 'Import Correction Sheet' above)</span>`; }
+            if (importStatusEl) { importStatusEl.textContent = 'No sheet loaded'; }
+        }
     }
 
     const banner = document.getElementById('row-cap-warning-banner');
@@ -320,6 +446,7 @@ function setupZone(zoneId, inputId, apiUrl, labelId) {
 
 async function uploadFile(file, apiUrl, labelEl) {
     labelEl.innerText = `Uploading ${file.name}...`;
+    showScLoading(`Uploading ${file.name} & re-computing shift trends...`);
     const formData = new FormData();
     formData.append('file', file);
     try {
@@ -340,6 +467,8 @@ async function uploadFile(file, apiUrl, labelEl) {
     } catch (e) {
         alert(e.message);
         labelEl.innerText = "Upload failed. Try again.";
+    } finally {
+        hideScLoading();
     }
 }
 
@@ -351,6 +480,7 @@ async function fetchMetrics() {
 }
 
 async function fetchMetricsCore() {
+    showScLoading("Loading shape metrics & Pareto charts...");
     try {
         const params = new URLSearchParams();
         if (scDateFrom) params.set('date_from', scDateFrom);
@@ -362,23 +492,43 @@ async function fetchMetricsCore() {
         globalData = data;
 
         renderKPIs(data.summary);
-        renderParetoChart(data.pareto);
+        renderPeriodBReasonsChart(data.pareto);
         renderShiftDriftChart(data.shift_drift);
         renderCorrectionEffectiveness(data.correction_effectiveness, data.summary);
         renderActionList(data.action_list);
     } catch (e) {
         console.error("Fetch metrics error:", e);
+    } finally {
+        hideScLoading();
     }
 }
 
-const PLOT_BASE = {
-    font: { family: 'Inter', color: '#8b949e', size: 11 },
-    paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
-    margin: { l: 45, r: 15, t: 10, b: 70 },
-    legend: { orientation: 'h', y: -0.25, font: { color: '#f0f2f5', size: 11 } },
-    yaxis: { gridcolor: 'rgba(255,255,255,0.08)', zeroline: false },
-    barmode: 'group'
-};
+function getPlotBase() {
+    const isLight = document.body.classList.contains('light-theme');
+    return {
+        font: { family: 'Inter', color: isLight ? '#475569' : '#8b949e', size: 11 },
+        paper_bgcolor: 'rgba(0,0,0,0)',
+        plot_bgcolor: 'rgba(0,0,0,0)',
+        margin: { l: 45, r: 15, t: 10, b: 70 },
+        legend: { orientation: 'h', y: -0.25, font: { color: isLight ? '#0F172A' : '#f0f2f5', size: 11 } },
+        yaxis: { gridcolor: isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)', zeroline: false },
+        xaxis: { gridcolor: isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)' },
+        barmode: 'group',
+        dragmode: false,
+        hovermode: 'closest'
+    };
+}
+const PLOT_BASE = getPlotBase();
+
+function renderAllShapeCharts() {
+    if (typeof globalData !== 'undefined' && globalData) {
+        if (typeof renderPeriodBReasonsChart === 'function') renderPeriodBReasonsChart(globalData.pareto);
+        if (typeof renderShiftDriftChart === 'function') renderShiftDriftChart(globalData.shift_drift);
+        if (typeof renderCorrectionEffectiveness === 'function') renderCorrectionEffectiveness(globalData.correction_effectiveness, globalData.summary);
+    }
+}
+window.renderAllShapeCharts = renderAllShapeCharts;
+
 const COLOR_A = '#8b949e', COLOR_B = '#00b0ff';
 
 function changeText(a, b, unit, pct) {
@@ -400,42 +550,222 @@ function renderKPIs(s) {
     document.getElementById('kpi-pending').innerText = s.pending.toLocaleString();
 }
 
-function renderParetoChart(pareto) {
-    const x = pareto.map(p => p.reason);
-    const bar = (name, key, color) => ({ x, y: pareto.map(p => p[key]), name, type: 'bar', marker: { color },
-        text: pareto.map(p => p[key]), textposition: 'outside', textfont: { color: '#f0f2f5' } });
-    Plotly.newPlot('chart-pareto', [bar('Period A', 'a', COLOR_A), bar('Period B', 'b', COLOR_B)],
-        { ...PLOT_BASE, yaxis: { ...PLOT_BASE.yaxis, title: 'Failed lenses' } }, { responsive: true, displayModeBar: false });
-}
+// -----------------------------------------------------------------------------
+// TOP REASONS OF FAILURE (STRICTLY FOR PERIOD B) - SPAN-2
+// -----------------------------------------------------------------------------
+function renderPeriodBReasonsChart(pareto) {
+    const el = document.getElementById('chart-period-b-reasons');
+    if (!el) return;
+    if (!pareto || !Array.isArray(pareto)) return;
+    const isLight = document.body.classList.contains('light-theme');
 
-function renderShiftDriftChart(shift) {
-    const x = shift.map(s => s.shift.replace(/ Shift/, '').replace(/ \(.*\)/, '') + (s.shift.includes('(') ? '<br>' + s.shift.match(/\((.*)\)/)[1] : ''));
-    const bar = (name, rk, ek, qk, color) => ({
-        x, y: shift.map(s => s[rk]), name, type: 'bar', marker: { color },
-        text: shift.map(s => s[rk] + '%'), textposition: 'outside', textfont: { color: '#f0f2f5' },
-        customdata: shift.map(s => [s[ek], s[qk]]), hovertemplate: '%{y}%  (%{customdata[0]} fails of %{customdata[1]} QC\'d)<extra>' + name + '</extra>'
+    // Extract Period B failures only, filter out 0s, and sort ascending so top (worst) reason is on top
+    const bItems = pareto
+        .map(p => ({ reason: p.reason, count: Number(p.b) || 0 }))
+        .filter(p => p.count > 0)
+        .sort((x, y) => x.count - y.count);
+
+    if (bItems.length === 0) {
+        el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:0.85rem;">No failure records found for Period B</div>';
+        return;
+    }
+
+    const totalB = bItems.reduce((acc, cur) => acc + cur.count, 0);
+    const yReasons = bItems.map(p => p.reason);
+    const xCounts = bItems.map(p => p.count);
+    const textLabels = bItems.map(p => {
+        const pct = totalB > 0 ? ((p.count / totalB) * 100).toFixed(1) : '0.0';
+        return ` <b>${p.count}</b> (${pct}%)`;
     });
-    Plotly.newPlot('chart-shift-drift', [bar('Period A', 'rate_a', 'events_a', 'qc_a', COLOR_A), bar('Period B', 'rate_b', 'events_b', 'qc_b', COLOR_B)],
-        { ...PLOT_BASE, yaxis: { ...PLOT_BASE.yaxis, title: 'Fail rate %' } }, { responsive: true, displayModeBar: false });
+
+    // Dynamic gradient color: largest reason gets brightest cyan accent
+    const colors = bItems.map((_, i) => {
+        const ratio = (i + 1) / bItems.length;
+        return isLight ? `rgba(2, 132, 199, ${0.4 + 0.6 * ratio})` : `rgba(0, 242, 254, ${0.45 + 0.55 * ratio})`;
+    });
+
+    const trace = {
+        type: 'bar',
+        orientation: 'h',
+        x: xCounts,
+        y: yReasons,
+        marker: {
+            color: colors,
+            line: {
+                color: isLight ? '#0284C7' : '#00F2FE',
+                width: 1.5
+            }
+        },
+        text: textLabels,
+        textposition: 'outside',
+        textfont: {
+            color: isLight ? '#0F172A' : '#F8FAFC',
+            size: 11,
+            family: 'Inter, sans-serif'
+        },
+        hovertemplate: '<b>%{y}</b><br>Period B Failures: <b>%{x} lenses</b><br>Share: <b>%{text}</b><extra>Period B Only</extra>'
+    };
+
+    const maxCount = Math.max(...xCounts, 10);
+    const base = getPlotBase();
+
+    const layout = {
+        ...base,
+        margin: { l: 140, r: 85, t: 20, b: 40 },
+        xaxis: {
+            ...base.xaxis,
+            title: 'Lenses Failed',
+            range: [0, maxCount * 1.32],
+            zeroline: false
+        },
+        yaxis: {
+            ...base.yaxis,
+            automargin: true,
+            tickfont: {
+                color: isLight ? '#334155' : '#CBD5E1',
+                size: 11,
+                weight: 500
+            }
+        },
+        showlegend: false
+    };
+
+    Plotly.newPlot(el, [trace], layout, {
+        responsive: true,
+        displayModeBar: false,
+        scrollZoom: false
+    });
 }
+window.renderPeriodBReasonsChart = renderPeriodBReasonsChart;
+
+// -----------------------------------------------------------------------------
+// LOGGED CORRECTIONS / TRACING BY SHIFT (SHIFT A, B, C)
+// -----------------------------------------------------------------------------
+function renderShiftDriftChart(shift) {
+    const el = document.getElementById('chart-shift-drift');
+    if (!el) return;
+    if (!shift || !Array.isArray(shift) || shift.length === 0) {
+        el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:0.85rem;">No shift data available</div>';
+        return;
+    }
+    const isLight = document.body.classList.contains('light-theme');
+    const base = getPlotBase();
+
+    // Check if shift has logged counts (traced / manual)
+    if (shift[0] && (shift[0].traced !== undefined || shift[0].total !== undefined)) {
+        const xCategories = shift.map(s => s.shift_label || s.shift);
+        const tracedCounts = shift.map(s => s.traced || 0);
+        const manualCounts = shift.map(s => s.manual || 0);
+        const totals = shift.map(s => s.total || (s.traced + s.manual) || 0);
+
+        const traceTraced = {
+            name: 'Traced',
+            x: xCategories,
+            y: tracedCounts,
+            type: 'bar',
+            marker: { color: isLight ? '#0284C7' : '#00F2FE' },
+            text: tracedCounts.map(v => v > 0 ? `${v}` : ''),
+            textposition: 'inside',
+            textfont: { color: isLight ? '#ffffff' : '#0F172A', size: 11, weight: 600 },
+            hovertemplate: '<b>%{x}</b><br>Traced Corrections: <b>%{y}</b><extra>Traced</extra>'
+        };
+
+        const traceManual = {
+            name: 'Manual',
+            x: xCategories,
+            y: manualCounts,
+            type: 'bar',
+            marker: { color: isLight ? '#EA580C' : '#F97316' },
+            text: manualCounts.map(v => v > 0 ? `${v}` : ''),
+            textposition: 'inside',
+            textfont: { color: '#ffffff', size: 11, weight: 600 },
+            hovertemplate: '<b>%{x}</b><br>Manual Corrections: <b>%{y}</b><extra>Manual</extra>'
+        };
+
+        const maxTotal = Math.max(...totals, 5);
+        const layout = {
+            ...base,
+            barmode: 'stack',
+            margin: { l: 45, r: 15, t: 20, b: 50 },
+            yaxis: {
+                ...base.yaxis,
+                title: 'Logged Corrections',
+                range: [0, maxTotal * 1.25],
+                zeroline: false
+            },
+            xaxis: {
+                ...base.xaxis,
+                tickfont: { color: isLight ? '#334155' : '#CBD5E1', size: 11 }
+            },
+            legend: {
+                orientation: 'h',
+                y: -0.22,
+                font: { color: isLight ? '#0F172A' : '#f0f2f5', size: 11 }
+            }
+        };
+
+        Plotly.newPlot(el, [traceTraced, traceManual], layout, {
+            responsive: true,
+            displayModeBar: false,
+            scrollZoom: false
+        });
+    } else {
+        // Fallback for Period A vs Period B fail rate if older QC data format
+        const x = shift.map(s => (s.shift || '').replace(/ Shift/, ''));
+        const bar = (name, rk, ek, qk, color) => ({
+            x, y: shift.map(s => s[rk]), name, type: 'bar', marker: { color },
+            text: shift.map(s => s[rk] + '%'), textposition: 'outside', textfont: { color: isLight ? '#0F172A' : '#f0f2f5' },
+            customdata: shift.map(s => [s[ek], s[qk]]), hovertemplate: '%{y}% (%{customdata[0]} fails of %{customdata[1]} QC\'d)<extra>' + name + '</extra>'
+        });
+        Plotly.newPlot(el, [bar('Period A', 'rate_a', 'events_a', 'qc_a', COLOR_A), bar('Period B', 'rate_b', 'events_b', 'qc_b', COLOR_B)],
+            { ...base, barmode: 'group', yaxis: { ...base.yaxis, title: 'Fail rate %' } }, { responsive: true, displayModeBar: false });
+    }
+}
+window.renderShiftDriftChart = renderShiftDriftChart;
 
 function renderCorrectionEffectiveness(eff, summary) {
+    if (!eff || !summary) return;
+    const isLight = document.body.classList.contains('light-theme');
     const trace = {
         labels: ['Corrected', 'Recurred', 'Pending', 'Unlogged'],
         values: [eff.corrected, eff.recurred, eff.pending, eff.corrected_unlogged],
         type: 'pie', hole: 0.55, marker: { colors: ['#00e676', '#ff1744', '#ffeb3b', '#e040fb'] },
-        textinfo: 'label+value', textfont: { color: '#f0f2f5', size: 12 }, hoverinfo: 'label+percent+value'
+        textinfo: 'label+value', textfont: { color: '#ffffff', size: 12 }, hoverinfo: 'label+percent+value'
     };
-    Plotly.newPlot('chart-correction-eff', [trace], {
-        font: PLOT_BASE.font, paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+    const base = getPlotBase();
+    const el = document.getElementById('chart-correction-eff');
+    if (!el) return;
+
+    Plotly.newPlot(el, [trace], {
+        font: base.font, paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
         margin: { l: 20, r: 20, t: 10, b: 10 }, showlegend: true,
-        legend: { orientation: 'h', y: -0.1, font: { color: '#f0f2f5', size: 10 } },
+        dragmode: false, hovermode: 'closest',
+        legend: { orientation: 'h', y: -0.1, font: { color: isLight ? '#0F172A' : '#f0f2f5', size: 10 } },
         annotations: [{ text: `${summary.weekly_correction_pct}%<br>Fixed`, showarrow: false, font: { size: 18, color: '#00e676', family: 'Outfit' } }]
-    }, { responsive: true, displayModeBar: false });
+    }, { responsive: true, displayModeBar: false, scrollZoom: false });
+
+    // Interactive Donut Click: Filter "PIDs Needing Action" table
+    if (el.removeAllListeners) {
+        el.removeAllListeners('plotly_click');
+    }
+    if (el.on) {
+        el.on('plotly_click', function(data) {
+            if (!data || !data.points || !data.points.length) return;
+            const clickedLabel = data.points[0].label; // 'Pending', 'Recurred', 'Unlogged', 'Corrected'
+            filterActionListByClassification(clickedLabel);
+        });
+    }
 }
 
+// -----------------------------------------------------------------------------
+// PIDS NEEDING ACTION: TABLE RENDERING & DONUT SLICE FILTERING
+// -----------------------------------------------------------------------------
+let currentActionFilter = null;
+
 function renderActionList(list) {
-    document.getElementById('action-table-body').innerHTML = (list || []).map(c => `
+    const tbody = document.getElementById('action-table-body');
+    if (!tbody) return;
+    tbody.innerHTML = (list || []).map(c => `
         <tr>
             <td><strong class="cursor-pointer text-blue" onclick="quickLookupPID('${escHtml(c.pid)}')">${escHtml(c.pid)}</strong></td>
             <td><span class="tag tag-${escHtml(c.classification)}">${escHtml(c.classification)}</span></td>
@@ -443,8 +773,65 @@ function renderActionList(list) {
             <td>${escHtml(c.reason_cluster)}</td>
             <td>${c.correction_timestamp && c.correction_timestamp !== 'N/A' ? escHtml(c.correction_timestamp) : '-'}</td>
             <td>${escHtml(c.done_by) || '-'}</td>
-        </tr>`).join('') || '<tr><td colspan="7" class="text-center text-muted">No Recurred or Pending PIDs</td></tr>';
+        </tr>`).join('') || '<tr><td colspan="7" class="text-center text-muted" style="padding: 16px;">No PIDs match this selection</td></tr>';
 }
+
+function filterActionListByClassification(label) {
+    if (currentActionFilter === label) {
+        resetActionListFilter();
+        return;
+    }
+    currentActionFilter = label;
+    const all = (globalData && globalData.classified_pids && globalData.classified_pids.length)
+        ? globalData.classified_pids
+        : ((globalData && globalData.action_list) ? globalData.action_list : []);
+
+    let filtered = all.filter(c => {
+        if (label === 'Unlogged') {
+            return c.classification === 'Corrected-unlogged' || c.classification === 'Unlogged';
+        }
+        return c.classification === label;
+    });
+
+    // Sort worst first: fail_events_b desc, fail_event_count desc
+    filtered.sort((a, b) => (b.fail_events_b || 0) - (a.fail_events_b || 0) || (b.fail_event_count || 0) - (a.fail_event_count || 0));
+
+    const headerTitle = document.getElementById('action-table-title');
+    const headerSub = document.getElementById('action-table-sub');
+    let tagColor = '#00F2FE';
+    if (label === 'Pending') tagColor = '#eab308';
+    else if (label === 'Recurred') tagColor = '#ef4444';
+    else if (label === 'Unlogged') tagColor = '#a855f7';
+    else if (label === 'Corrected') tagColor = '#22c55e';
+
+    if (headerTitle) {
+        headerTitle.innerHTML = `PIDs Needing Action &mdash; <span style="color:${tagColor}; font-weight:800;">${escHtml(label)} (${filtered.length})</span>`;
+    }
+    if (headerSub) {
+        headerSub.innerHTML = `Filtered by slice <strong>${escHtml(label)}</strong> (${filtered.length} total PIDs). <button type="button" class="btn btn-sm btn-secondary" onclick="resetActionListFilter()" style="margin-left: 10px; padding: 2px 10px; font-size: 0.74rem; cursor: pointer; border-radius: 6px;">✕ Reset Filter</button>`;
+    }
+
+    renderActionList(filtered);
+
+    // Smooth scroll down to table so user sees the filtered rows immediately
+    const tableTitleEl = document.getElementById('action-table-title');
+    if (tableTitleEl) {
+        tableTitleEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+}
+window.filterActionListByClassification = filterActionListByClassification;
+
+function resetActionListFilter() {
+    currentActionFilter = null;
+    const headerTitle = document.getElementById('action-table-title');
+    const headerSub = document.getElementById('action-table-sub');
+    if (headerTitle) headerTitle.innerText = 'PIDs Needing Action';
+    if (headerSub) headerSub.innerText = 'Recurred and Pending PIDs, worst first (by Period B failures). Click a PID for its full history.';
+    if (globalData && globalData.action_list) {
+        renderActionList(globalData.action_list);
+    }
+}
+window.resetActionListFilter = resetActionListFilter;
 
 // =====================
 // DRILLDOWN
@@ -511,18 +898,22 @@ function setupExplorerSubtabs() {
         { btn: 'subtab-pid', panel: 'exp-panel-pid' },
         { btn: 'subtab-classifications', panel: 'exp-panel-classifications', action: fetchExplorerClassifications },
         { btn: 'subtab-clusters', panel: 'exp-panel-clusters', action: fetchExplorerClusters },
-        { btn: 'subtab-fails', panel: 'exp-panel-fails', action: fetchExplorerFails },
-        { btn: 'subtab-corrections', panel: 'exp-panel-corrections', action: fetchExplorerCorrections }
+        { btn: 'subtab-fails', panel: 'exp-panel-fails', action: fetchExplorerFails }
     ];
 
     subtabs.forEach(tab => {
-        document.getElementById(tab.btn).addEventListener('click', () => {
+        const btnEl = document.getElementById(tab.btn);
+        const panelEl = document.getElementById(tab.panel);
+        if (!btnEl || !panelEl) return;
+        btnEl.addEventListener('click', () => {
             subtabs.forEach(t => {
-                document.getElementById(t.btn).classList.remove('active');
-                document.getElementById(t.panel).classList.add('hidden');
+                const b = document.getElementById(t.btn);
+                const p = document.getElementById(t.panel);
+                if (b) b.classList.remove('active');
+                if (p) p.classList.add('hidden');
             });
-            document.getElementById(tab.btn).classList.add('active');
-            document.getElementById(tab.panel).classList.remove('hidden');
+            btnEl.classList.add('active');
+            panelEl.classList.remove('hidden');
             if (tab.action) tab.action();
         });
     });
@@ -532,16 +923,16 @@ function setupExplorerControls() {
     // PID Lookup
     const pidInput = document.getElementById('exp-pid-input');
     const pidBtn = document.getElementById('exp-pid-btn');
-    const execPid = () => { const q = pidInput.value.trim(); if (q) fetchPIDHistory(q); };
-    pidBtn.addEventListener('click', execPid);
-    pidInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') execPid(); });
+    if (pidBtn && pidInput) {
+        const execPid = () => { const q = pidInput.value.trim(); if (q) fetchPIDHistory(q); };
+        pidBtn.addEventListener('click', execPid);
+        pidInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') execPid(); });
+    }
 
     // Classifications
     bindExplorerTableControls('exp-class', expClassState, fetchExplorerClassifications, [], 'exp-class-status-filter', 'status');
     // Fails
     bindExplorerTableControls('exp-fails', expFailsState, fetchExplorerFails, [], 'exp-fails-period-filter', 'period');
-    // Corrections
-    bindExplorerTableControls('exp-corr', expCorrState, fetchExplorerCorrections);
     // Master database
     bindExplorerTableControls('exp-master', expMasterState, fetchExplorerMaster, [], 'exp-master-type', 'type');
     document.getElementById('exp-master-from').addEventListener('change', (e) => { expMasterState.date_from = e.target.value; expMasterState.page = 1; fetchExplorerMaster(); });
@@ -618,7 +1009,8 @@ async function fetchPIDHistory(pid) {
         badge.innerText = data.classification;
         badge.className = `badge tag-${data.classification.replace(/\s+/g, '')}`;
 
-        document.getElementById('btn-pid-add-correction').onclick = () => openManualCorrectionModal(data.pid);
+        const btnFocus = document.getElementById('btn-pid-add-correction');
+        if (btnFocus) btnFocus.onclick = () => focusMainLogForm(data.pid);
 
         // Fails table
         const failsTbody = document.getElementById('pid-fails-tbody');
@@ -1076,141 +1468,143 @@ async function checkPidInvoice() {
     } catch (e) { out.innerHTML = `<div class="master-warning-item">Error: ${escHtml(e.message)}</div>`; }
 }
 
-// =====================
-// MANUAL CORRECTION MODAL
-// =====================
-function setupManualCorrectionModal() {
-    const modal = document.getElementById('manual-correction-modal');
-    const btnOpen = document.getElementById('btn-open-manual-corr-modal');
-    const btnClose = document.getElementById('btn-close-manual-modal');
-    const btnCancel = document.getElementById('btn-cancel-manual-modal');
-    const form = document.getElementById('form-manual-correction');
-    const issueSelect = document.getElementById('manual-issue-select');
-    const issueCustom = document.getElementById('manual-issue-custom');
-
-    if (btnOpen) btnOpen.addEventListener('click', () => openManualCorrectionModal());
-    if (btnClose) btnClose.addEventListener('click', () => modal.classList.add('hidden'));
-    if (btnCancel) btnCancel.addEventListener('click', () => modal.classList.add('hidden'));
-
-    if (issueSelect) {
-        issueSelect.addEventListener('change', (e) => {
-            if (e.target.value === '__custom__') {
-                issueCustom.classList.remove('hidden');
-            } else {
-                issueCustom.classList.add('hidden');
-            }
-        });
+// =============================================================================
+// RECENT SHAPE CORRECTIONS LOG & UNIFIED LOGGING (Display when logging, like E2)
+// =============================================================================
+function setupRecentCorrectionsLog() {
+    const btnRefresh = document.getElementById('btn-refresh-recent-log');
+    if (btnRefresh) {
+        btnRefresh.addEventListener('click', () => loadRecentCorrections());
     }
 
-    if (form) {
-        form.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            await saveManualCorrectionForm();
+    const btnExport = document.getElementById('btn-export-log-card');
+    if (btnExport) {
+        btnExport.addEventListener('click', () => {
+            const from = document.getElementById('sc-date-from') ? document.getElementById('sc-date-from').value : '';
+            const to   = document.getElementById('sc-date-to') ? document.getElementById('sc-date-to').value : '';
+            let url = '/api/shape/export/corrections_log';
+            const params = [];
+            if (from) params.push(`date_from=${from}`);
+            if (to)   params.push(`date_to=${to}`);
+            if (params.length) url += '?' + params.join('&');
+            window.location = url;
         });
     }
 }
 
-function openManualCorrectionModal(pid = '', existingEntry = null) {
-    const modal = document.getElementById('manual-correction-modal');
-    document.getElementById('manual-entry-id').value = existingEntry ? existingEntry.id : '';
-    
-    // Fill in values if existing entry
-    let p_val = existingEntry ? (existingEntry.pid_invoice || existingEntry.pid) : pid;
-    document.getElementById('manual-pid').value = p_val || '';
-    
-    document.getElementById('manual-done-by').value = existingEntry
-        ? existingEntry.done_by
-        : (localStorage.getItem('sc_operator') || 'QC Lead');
-    
-    const shiftIcSel = document.getElementById('manual-shift-ic');
-    if (shiftIcSel) {
-        shiftIcSel.value = existingEntry
-            ? (existingEntry.shift_ic || localStorage.getItem('sc_shift_ic') || 'ADITI')
-            : (localStorage.getItem('sc_shift_ic') || 'ADITI');
-    }
-    
-    const now = new Date();
-    document.getElementById('manual-timestamp').value = existingEntry && existingEntry.timestamp 
-        ? existingEntry.timestamp.slice(0, 16) 
-        : new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-        
-    document.getElementById('manual-issue-select').value = existingEntry ? existingEntry.issue_raw : 'Wrong shape cut by machine';
-    document.getElementById('manual-issue-custom').classList.add('hidden');
-    document.getElementById('manual-issue-custom').value = '';
-    
-    document.getElementById('manual-percentage-dev').value = existingEntry ? existingEntry.percentage_dev : '';
-    
-    document.getElementById('manual-dim-a').value = existingEntry && existingEntry.dims_before ? existingEntry.dims_before.A : '';
-    document.getElementById('manual-dim-b').value = existingEntry && existingEntry.dims_before ? existingEntry.dims_before.B : '';
-    document.getElementById('manual-dim-circ-r').value = existingEntry && existingEntry.dims_before ? existingEntry.dims_before.CIRC_R : '';
-    document.getElementById('manual-dim-circ-l').value = existingEntry && existingEntry.dims_before ? existingEntry.dims_before.CIRC_L : '';
-    
-    document.getElementById('manual-dim-a1').value = existingEntry && existingEntry.dims_after ? existingEntry.dims_after.A1 : '';
-    document.getElementById('manual-dim-b1').value = existingEntry && existingEntry.dims_after ? existingEntry.dims_after.B1 : '';
-    document.getElementById('manual-dim-circ-r1').value = existingEntry && existingEntry.dims_after ? existingEntry.dims_after.CIRC_R1 : '';
-    document.getElementById('manual-dim-circ-l1').value = existingEntry && existingEntry.dims_after ? existingEntry.dims_after.CIRC_L1 : '';
-    
-    document.getElementById('manual-notes').value = existingEntry ? existingEntry.notes : '';
-    document.getElementById('manual-before-qc').value = existingEntry && existingEntry.before_qc_done != null ? existingEntry.before_qc_done : '';
-    document.getElementById('manual-before-fails').value = existingEntry && existingEntry.before_fails != null ? existingEntry.before_fails : '';
-    modal.classList.remove('hidden');
-}
-
-async function saveManualCorrectionForm() {
-    const pid = document.getElementById('manual-pid').value.trim();
-    const doneBy = document.getElementById('manual-done-by').value.trim() || 'QC Lead';
-    const ts = document.getElementById('manual-timestamp').value;
-    const issueSelect = document.getElementById('manual-issue-select').value;
-    const issueCustom = document.getElementById('manual-issue-custom').value.trim();
-    const issueRaw = (issueSelect === '__custom__') ? (issueCustom || 'Manual Shape Correction') : issueSelect;
-
-    const payload = {
-        id: document.getElementById('manual-entry-id').value || null,
-        pid: pid,
-        pid_invoice: pid,
-        done_by: doneBy,
-        shift_ic: (document.getElementById('manual-shift-ic') || {}).value || '',
-        timestamp: ts ? ts.replace('T', ' ') + ':00' : null,
-        issue_raw: issueRaw,
-        percentage_dev: !isNaN(parseFloat(document.getElementById('manual-percentage-dev').value)) ? parseFloat(document.getElementById('manual-percentage-dev').value) : null,
-        a: !isNaN(parseFloat(document.getElementById('manual-dim-a').value)) ? parseFloat(document.getElementById('manual-dim-a').value) : null,
-        b: !isNaN(parseFloat(document.getElementById('manual-dim-b').value)) ? parseFloat(document.getElementById('manual-dim-b').value) : null,
-        circ_r: !isNaN(parseFloat(document.getElementById('manual-dim-circ-r').value)) ? parseFloat(document.getElementById('manual-dim-circ-r').value) : null,
-        circ_l: !isNaN(parseFloat(document.getElementById('manual-dim-circ-l').value)) ? parseFloat(document.getElementById('manual-dim-circ-l').value) : null,
-        a1: !isNaN(parseFloat(document.getElementById('manual-dim-a1').value)) ? parseFloat(document.getElementById('manual-dim-a1').value) : null,
-        b1: !isNaN(parseFloat(document.getElementById('manual-dim-b1').value)) ? parseFloat(document.getElementById('manual-dim-b1').value) : null,
-        circ_r1: !isNaN(parseFloat(document.getElementById('manual-dim-circ-r1').value)) ? parseFloat(document.getElementById('manual-dim-circ-r1').value) : null,
-        circ_l1: !isNaN(parseFloat(document.getElementById('manual-dim-circ-l1').value)) ? parseFloat(document.getElementById('manual-dim-circ-l1').value) : null,
-        before_qc_done: !isNaN(parseFloat(document.getElementById('manual-before-qc').value)) ? parseFloat(document.getElementById('manual-before-qc').value) : null,
-        before_fails: !isNaN(parseFloat(document.getElementById('manual-before-fails').value)) ? parseFloat(document.getElementById('manual-before-fails').value) : null,
-        notes: document.getElementById('manual-notes').value.trim()
-    };
+async function loadRecentCorrections() {
+    const tbody = document.getElementById('sc-recent-tbody');
+    const badge = document.getElementById('sc-recent-count');
+    if (!tbody) return;
 
     try {
-        const res = await fetch('/api/manual_corrections', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        if (!res.ok) throw new Error("Failed to save");
+        const res = await fetch('/api/shape/manual_corrections');
+        if (!res.ok) throw new Error('Failed to load corrections');
+        const list = await res.json();
 
-        document.getElementById('manual-correction-modal').classList.add('hidden');
-        await fetchMetrics();
-        if (currentLookupPID && currentLookupPID === pid) fetchPIDHistory(pid);
-        alert(`✓ Correction saved for PID #${pid}. Dashboard updated.`);
+        // Sort descending by timestamp
+        list.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+
+        if (badge) badge.textContent = `${list.length} entries`;
+        renderRecentCorrections(list);
     } catch (e) {
-        alert(`Error: ${e.message}`);
+        console.error('Failed to load recent corrections:', e);
+        if (tbody) tbody.innerHTML = `<tr><td colspan="11" class="text-center text-muted" style="padding:16px;">Failed to load log: ${escHtml(e.message)}</td></tr>`;
     }
 }
-async function handleDeleteManualCorrection(entryId, pid) {
-    if (!entryId || !confirm(`Delete correction for PID #${pid}?`)) return;
+
+function renderRecentCorrections(list) {
+    const tbody = document.getElementById('sc-recent-tbody');
+    if (!tbody) return;
+
+    if (!list || list.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="11" class="text-center text-muted" style="padding: 20px;">No shape corrections logged yet. Enter a PID above to log one!</td></tr>`;
+        return;
+    }
+
+    const formatDim = (d) => (d != null ? d : '--');
+
+    tbody.innerHTML = list.map(entry => {
+        const type = entry.correction_type || (entry.issue_raw && entry.issue_raw.toLowerCase().includes('trac') ? 'Traced' : 'Manual');
+        const typeClass = type.toLowerCase() === 'manual' ? 'manual' : 'traced';
+
+        const b = entry.dims_before || {};
+        const a = entry.dims_after || {};
+
+        const a_val = entry.a != null ? entry.a : b.A;
+        const b_val = entry.b != null ? entry.b : b.B;
+        const cr_val = entry.circ_r != null ? entry.circ_r : b.CIRC_R;
+        const cl_val = entry.circ_l != null ? entry.circ_l : b.CIRC_L;
+
+        const a1_val = entry.a1 != null ? entry.a1 : a.A1;
+        const b1_val = entry.b1 != null ? entry.b1 : a.B1;
+        const cr1_val = entry.circ_r1 != null ? entry.circ_r1 : a.CIRC_R1;
+        const cl1_val = entry.circ_l1 != null ? entry.circ_l1 : a.CIRC_L1;
+
+        const beforeStr = [a_val, b_val, cr_val, cl_val].some(x => x != null)
+            ? `${formatDim(a_val)} / ${formatDim(b_val)} / ${formatDim(cr_val)} / ${formatDim(cl_val)}`
+            : '--';
+
+        const afterStr = [a1_val, b1_val, cr1_val, cl1_val].some(x => x != null)
+            ? `${formatDim(a1_val)} / ${formatDim(b1_val)} / ${formatDim(cr1_val)} / ${formatDim(cl1_val)}`
+            : '--';
+
+        const devStr = entry.percentage_dev != null ? `${entry.percentage_dev}%` : '--';
+        const tsStr = entry.timestamp ? entry.timestamp.slice(0, 19) : '--';
+        const pidDisplay = entry.pid_invoice || entry.pid || '--';
+
+        return `
+            <tr>
+                <td style="white-space: nowrap; font-size: 0.78rem; color: var(--text-muted);">${escHtml(tsStr)}</td>
+                <td><strong class="text-blue cursor-pointer" onclick="quickLookupPID('${escHtml(entry.pid || '')}')">${escHtml(pidDisplay)}</strong></td>
+                <td><span class="badge-corr-type ${typeClass}">${escHtml(type)}</span></td>
+                <td>${escHtml(entry.issue_raw || 'Shape Correction')}</td>
+                <td>${escHtml(entry.done_by || '--')}</td>
+                <td>${escHtml(entry.shift_ic || '--')}</td>
+                <td style="font-family: monospace; font-size: 0.76rem;">${escHtml(beforeStr)}</td>
+                <td style="font-family: monospace; font-size: 0.76rem; color: #38bdf8;">${escHtml(afterStr)}</td>
+                <td>${escHtml(devStr)}</td>
+                <td style="max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escHtml(entry.notes || '')}">${escHtml(entry.notes || '--')}</td>
+                <td style="text-align: center;">
+                    <button type="button" class="btn-delete-row" onclick="deleteRecentCorrection('${escHtml(entry.id)}', '${escHtml(entry.pid)}')" title="Delete Entry">
+                        🗑️
+                    </button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+async function deleteRecentCorrection(entryId, pid) {
+    if (!entryId || !confirm(`Delete correction record for PID #${pid}?`)) return;
     try {
-        const res = await fetch(`/api/manual_corrections/${encodeURIComponent(entryId)}`, { method: 'DELETE' });
+        const res = await fetch(`/api/shape/manual_corrections/${encodeURIComponent(entryId)}`, { method: 'DELETE' });
         if (!res.ok) throw new Error("Delete failed");
+        await loadRecentCorrections();
         await fetchMetrics();
         if (currentLookupPID) fetchPIDHistory(currentLookupPID);
-        alert(`✓ Correction removed.`);
+        showLogFeedback('✓ Correction removed.', 'success');
     } catch (e) {
-        alert(`Error: ${e.message}`);
+        alert(`Error deleting correction: ${e.message}`);
+    }
+}
+
+function focusMainLogForm(pid) {
+    // Switch to main analytics dashboard where the focal log strip is
+    const btnTab = document.getElementById('tab-btn-analytics');
+    if (btnTab) btnTab.click();
+
+    const inputPid = document.getElementById('sc-log-pid');
+    if (inputPid && pid) {
+        inputPid.value = pid;
+    }
+
+    const logStrip = document.getElementById('sc-log-strip');
+    if (logStrip) {
+        logStrip.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    if (inputPid) {
+        setTimeout(() => inputPid.focus(), 300);
     }
 }
 

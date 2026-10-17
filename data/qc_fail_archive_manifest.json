@@ -7,7 +7,7 @@
     "first_date": "2026-08-03",
     "last_date": "2026-08-07",
     "ingested_at": "2026-10-10 18:24:52",
-    "last_seen_at": "2026-10-10 19:39:41"
+    "last_seen_at": "2026-10-17 20:47:41"
   },
   {
     "source_label": "Wk 8/8/2026 - 8/13/2026",
@@ -17,6 +17,16 @@
     "first_date": "2026-08-08",
     "last_date": "2026-08-12",
     "ingested_at": "2026-10-10 18:24:53",
-    "last_seen_at": "2026-10-10 19:39:42"
+    "last_seen_at": "2026-10-17 20:47:42"
+  },
+  {
+    "source_label": "QC Raw Data (3).xlsx",
+    "loaded_as": "QC Data",
+    "rows_in_file": 5459,
+    "rows_added": 5459,
+    "first_date": "2026-10-09",
+    "last_date": "2026-10-17",
+    "ingested_at": "2026-10-17 22:07:55",
+    "last_seen_at": "2026-10-17 22:08:07"
   }
 ]
