@@ -1376,7 +1376,21 @@ def api_import_escalations():
             ws = wb.active
             assert ws is not None
 
-            header_row = [str(cell).strip().upper() if cell is not None else '' for cell in next(ws.iter_rows(values_only=True))]
+            all_rows = list(ws.iter_rows(values_only=True))
+            header_row = []
+            header_row_idx = 1
+            best_match_count = 0
+            for r_i, r_vals in enumerate(all_rows[:10], 1):
+                clean_vals = [str(cell).strip().upper() for cell in r_vals if cell is not None]
+                matches = sum(1 for v in clean_vals if any(k in v for k in ['DATE', 'SHIFT', 'TRAY', 'OPERATOR', 'FITTING', 'STATUS', 'ISSUE', 'CATEGORY', 'MACHINE', 'JIT', 'INDEX']))
+                if matches > best_match_count:
+                    best_match_count = matches
+                    header_row = clean_vals
+                    header_row_idx = r_i
+
+            if not header_row and all_rows:
+                header_row = [str(cell).strip().upper() if cell is not None else '' for cell in all_rows[0]]
+                header_row_idx = 1
             
             def find_col(possible_names):
                 for name in possible_names:
@@ -1393,7 +1407,7 @@ def api_import_escalations():
             idx_shift = find_col(['SHIFT'])
             idx_shift_ic = find_col(['SHIFT IC', 'SHIFT_IC', 'IC'])
             idx_op = find_col(['OPERATOR', 'E2 OP', 'E2_OP', 'OP'])
-            idx_tray = find_col(['TRAY ID', 'TRAY_ID', 'TRAY'])
+            idx_tray = find_col(['TRAY ID', 'TRAY_ID', 'TRAY NO', 'TRAY NUMBER', 'TRAY BARCODE', 'TRAY'])
             idx_fitting = find_col(['FITTING ID', 'FITTING_ID', 'FITTING'])
             idx_is_jit = find_col(['IS JIT', 'IS_JIT', 'JIT/NOT JIT'])
             idx_fr = find_col(['FR TAG', 'PROCESSING TYPE', 'FR_TAG'])
@@ -1450,8 +1464,8 @@ def api_import_escalations():
             last_time_val = ''
             last_shift_val = 'Shift A'
 
-            for row_idx, row in enumerate(ws.iter_rows(values_only=True), 1):
-                if row_idx == 1 or not any(row):
+            for row_idx, row in enumerate(all_rows[header_row_idx:], header_row_idx + 1):
+                if not any(row):
                     continue
 
                 def get_raw(col_i):
@@ -1460,15 +1474,15 @@ def api_import_escalations():
                     return ''
 
                 tray_id = get_raw(idx_tray)
-                if not tray_id and idx_date != 0:
-                    tray_id = get_raw(0)  # Fallback to column 0 if empty
+                if not tray_id:
+                    tray_id = f"IMP_{row_idx}"
 
                 raw_date = parse_excel_date(row[idx_date] if idx_date != -1 and idx_date < len(row) else None)
                 raw_time = parse_excel_time(row[idx_time] if idx_time != -1 and idx_time < len(row) else None)
                 raw_shift = get_raw(idx_shift)
 
-                # Skip completely blank trailing rows (no tray_id, no fitting_id, no date)
-                if not tray_id and not get_raw(idx_fitting) and not raw_date:
+                # Skip completely blank trailing rows (no fitting_id, no date, no issue, no operator)
+                if not get_raw(idx_fitting) and not raw_date and not get_raw(idx_issue) and not get_raw(idx_op):
                     continue
 
                 # Forward-fill date/time/shift for consecutive rows with blank date cells
@@ -1671,22 +1685,29 @@ def export_csv():
 # =============================================================================
 SHAPE_TEMP_DIR = tempfile.mkdtemp(prefix="mei_shape_")
 ROOT_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-PROJEECT_BASE_DIR = os.path.join(os.path.dirname(__file__), "projeect copy 2")
 
-# Resolve default data paths from root data/ first, then fall back to projeect copy 2
+# Resolve default data paths from root data/
 def _resolve_data_path(*subpaths):
     p_root = os.path.join(ROOT_DATA_DIR, *subpaths)
-    if os.path.exists(p_root):
-        return p_root
-    p_copy = os.path.join(PROJEECT_BASE_DIR, "data", *subpaths)
-    if os.path.exists(p_copy):
-        return p_copy
-    p_copy_root = os.path.join(PROJEECT_BASE_DIR, *subpaths)
-    if os.path.exists(p_copy_root):
-        return p_copy_root
     return p_root
 
-DEFAULT_QC_PATH = _resolve_data_path("QC Raw Data (3).xlsx")
+ACTIVE_QC_CONFIG_PATH = os.path.join(ROOT_DATA_DIR, "active_qc_config.json")
+
+
+def _get_persisted_qc_path():
+    try:
+        if os.path.exists(ACTIVE_QC_CONFIG_PATH):
+            with open(ACTIVE_QC_CONFIG_PATH, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+                p = cfg.get('qc_path')
+                if p and os.path.exists(p):
+                    return p
+    except Exception:
+        pass
+    return _resolve_data_path("QC Raw Data (3).xlsx")
+
+
+DEFAULT_QC_PATH = _get_persisted_qc_path()
 DEFAULT_MANUAL_CORRECTIONS_PATH = _resolve_data_path("manual_corrections.json")
 DEFAULT_ARCHIVE_PATH = _resolve_data_path("qc_fail_archive.csv")
 DEFAULT_SETTINGS_PATH = _resolve_data_path("impact_settings.json")
@@ -1705,12 +1726,7 @@ def get_shape_analyzer():
     global GLOBAL_SHAPE_ANALYZER, session_qc_path
     with SHAPE_ANALYZER_LOCK:
         if GLOBAL_SHAPE_ANALYZER is None:
-            try:
-                from shape_analyzer import MEIAnalyzer
-            except ImportError:
-                if PROJEECT_BASE_DIR not in sys.path:
-                    sys.path.insert(0, PROJEECT_BASE_DIR)
-                from backend.analyzer import MEIAnalyzer
+            from shape_analyzer import MEIAnalyzer
             qc_p = session_qc_path if os.path.exists(session_qc_path) else DEFAULT_QC_PATH
             manual_p = DEFAULT_MANUAL_CORRECTIONS_PATH
             archive_p = DEFAULT_ARCHIVE_PATH
@@ -1779,18 +1795,54 @@ def get_shape_status():
         })
 
 
+@app.route('/api/shape/upload_qc', methods=['POST'])
 @app.route('/api/upload/period_a', methods=['POST'])
 @app.route('/api/shape/upload/period_a', methods=['POST'])
-def upload_shape_period_a():
-    """Legacy endpoint kept for backwards-compat — Period A uploads are no longer used."""
-    return jsonify({"success": False, "error": "Period A uploads are no longer used. QC data is loaded from 'QC Raw Data (3).xlsx' automatically."}), 410
-
-
 @app.route('/api/upload/period_b', methods=['POST'])
 @app.route('/api/shape/upload/period_b', methods=['POST'])
-def upload_shape_period_b():
-    """Legacy endpoint kept for backwards-compat — Period B uploads are no longer used."""
-    return jsonify({"success": False, "error": "Period B uploads are no longer used. QC data is loaded from 'QC Raw Data (3).xlsx' automatically."}), 410
+def upload_shape_qc():
+    """Uploads a new raw QC Excel file (.xlsx/.xls) and reinitializes the shape analyzer."""
+    global GLOBAL_SHAPE_ANALYZER, session_qc_path
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'error': 'No file uploaded'}), 400
+    uploaded = request.files['file']
+    fname = (uploaded.filename or '').strip()
+    if not (fname.lower().endswith('.xlsx') or fname.lower().endswith('.xls')):
+        return jsonify({'success': False, 'error': 'Only .xlsx and .xls Excel files are supported'}), 400
+
+    try:
+        save_dir = ROOT_DATA_DIR
+        os.makedirs(save_dir, exist_ok=True)
+        safe_fname = os.path.basename(fname)
+        dest_path = os.path.join(save_dir, safe_fname)
+        uploaded.save(dest_path)
+        print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] [QC Upload] Saved uploaded QC file to: '{dest_path}'", flush=True)
+
+        # Persist active QC path so it survives server restarts
+        try:
+            with open(ACTIVE_QC_CONFIG_PATH, 'w', encoding='utf-8') as f:
+                json.dump({'qc_path': dest_path, 'filename': safe_fname, 'uploaded_at': str(datetime.datetime.now())[:19]}, f, indent=2)
+        except Exception as e:
+            print(f"[!] Warning: Could not persist active QC config: {e}", flush=True)
+
+        with SHAPE_ANALYZER_LOCK:
+            session_qc_path = dest_path
+            GLOBAL_SHAPE_ANALYZER = None
+            invalidate_shape_cache()
+            analyzer = get_shape_analyzer()
+            qc_rows = getattr(analyzer, 'qc_total_rows', 0)
+            qc_label = getattr(analyzer, 'qc_label', safe_fname)
+
+        return jsonify({
+            'success': True,
+            'message': f'QC Data file "{safe_fname}" uploaded and processed successfully!',
+            'filename': safe_fname,
+            'rows': qc_rows,
+            'qc_label': qc_label
+        })
+    except Exception as e:
+        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [QC Upload Error]: {e}", flush=True)
+        return jsonify({'success': False, 'error': f'Failed to process QC file: {str(e)}'}), 500
 
 
 @app.route('/api/metrics', methods=['GET'])
@@ -2017,7 +2069,9 @@ def shape_import_corrections():
     try:
         print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] [Shape Import] Received uploaded file: '{uploaded.filename}'. Parsing workbook...", flush=True)
         import openpyxl
-        wb = openpyxl.load_workbook(uploaded, read_only=True, data_only=True)
+        target_path = os.path.join(os.path.dirname(__file__), 'data', 'MEI SHAPE CORRECTION Tracker.xlsx')
+        uploaded.save(target_path)
+        wb = openpyxl.load_workbook(target_path, read_only=True, data_only=True)
         # Specifically select the 'Tracing New Correction' sheet if present
         target_sheet = None
         for s in wb.sheetnames:
@@ -2057,6 +2111,18 @@ def shape_import_corrections():
         if c_pid_inv < 0:
             c_pid_inv = col(['PID', 'INVOICE'])
         c_date    = col(['CT', 'DATE', 'TIMESTAMP', 'CORRECTION DATE'])
+        if c_date < 0:
+            for test_col_idx in range(min(5, len(rows[0]))):
+                date_count = 0
+                for r in rows[1:30]:
+                    if test_col_idx < len(r) and r[test_col_idx] is not None:
+                        v = r[test_col_idx]
+                        v_str = str(v).strip()
+                        if isinstance(v, (datetime.datetime, datetime.date)) or ('2026' in v_str and '-' in v_str):
+                            date_count += 1
+                if date_count > 3:
+                    c_date = test_col_idx
+                    break
         c_issue   = col(['ISSUE', 'REASON', 'CORRECTION REASON'])
         c_by      = col(['DONE BY', 'PERSON', 'OPERATOR', 'TECHNICIAN'])
         c_type    = col(['AFTER', 'TYPE', 'CORRECTION TYPE'])
@@ -2090,7 +2156,7 @@ def shape_import_corrections():
                 return None
 
         analyzer = get_shape_analyzer()
-        imported = 0
+        imported_entries = []
         skipped  = 0
         now_str  = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -2128,12 +2194,13 @@ def shape_import_corrections():
                 'notes':    cell(raw_row, c_notes) or '',
                 'is_imported': True,
             }
-            try:
-                analyzer.save_manual_correction(entry)
-                imported += 1
-            except Exception:
-                skipped += 1
+            imported_entries.append(entry)
 
+        imported = analyzer.save_manual_corrections_batch(imported_entries)
+        global GLOBAL_SHAPE_ANALYZER
+        with SHAPE_ANALYZER_LOCK:
+            GLOBAL_SHAPE_ANALYZER = None
+            invalidate_shape_cache()
         invalidate_shape_cache()
         print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [Shape Import] [OK] Successfully imported {imported} rows ({skipped} empty/skipped). Saved to manual_corrections.json.", flush=True)
         return jsonify({
@@ -2239,6 +2306,10 @@ def create_shape_manual_correction():
     try:
         analyzer = get_shape_analyzer()
         saved = analyzer.save_manual_correction(req)
+        global GLOBAL_SHAPE_ANALYZER
+        with SHAPE_ANALYZER_LOCK:
+            GLOBAL_SHAPE_ANALYZER = None
+            invalidate_shape_cache()
         invalidate_shape_cache()
         updated_analysis = get_cached_shape_metrics()
         return jsonify({
@@ -2259,6 +2330,10 @@ def delete_shape_manual_correction(entry_id):
         ok = analyzer.delete_manual_correction(entry_id)
         if not ok:
             return jsonify({"error": "Manual correction entry not found."}), 404
+        global GLOBAL_SHAPE_ANALYZER
+        with SHAPE_ANALYZER_LOCK:
+            GLOBAL_SHAPE_ANALYZER = None
+            invalidate_shape_cache()
         invalidate_shape_cache()
         updated_analysis = get_cached_shape_metrics()
         return jsonify({
@@ -2314,6 +2389,10 @@ def save_shape_impact_settings():
     try:
         analyzer = get_shape_analyzer()
         analyzer.update_impact_settings(req)
+        global GLOBAL_SHAPE_ANALYZER
+        with SHAPE_ANALYZER_LOCK:
+            GLOBAL_SHAPE_ANALYZER = None
+            invalidate_shape_cache()
         invalidate_shape_cache()
         return jsonify(analyzer.get_correction_impact())
     except Exception as e:

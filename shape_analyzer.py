@@ -11,13 +11,21 @@ from rapidfuzz import fuzz
 
 # ---- Only machine-attributable shape reasons (fitter reasons removed) ----
 KNOWN_MEI_REASONS = [
+    "Loose fitting issue",
+    "Lens small size done by fitter",
+    "Lens chipped off while fitting process",
+    "Frame Alignment",
+    "Wrong shape done by fitter",
+    "Broken frame received from warehouse",
+    "Lens Big Size issue",
+    "Wrong bevel by machine",
+    "Wrong drilling issue",
+    "POP OUT",
     "SMALL SIZE CUT BY MACHINE",
     "Wrong shape cut by machine",
-    "Lens slip by machine",
-    "Lens Big Size issue",
-    "WRONG SHAPE",
-    "POP OUT",
-    "Lens chipped off while fitting process"
+    "Lens chipped off while Machining process",
+    "Lens Scratch while machining process",
+    "Lens Big Size issue"
 ]
 
 # ---- Correction log normalization maps ----
@@ -124,6 +132,7 @@ class MEIAnalyzer:
         self.df_past = None
         self.df_this = None
         self.df_qc = None        # Single QC dataframe (replaces df_past / df_this)
+        self.df_all_qc_fails = None  # All raw QC fail rows (lenses + frames + all reasons)
         self.df_log = None
 
         # Labels / metadata
@@ -161,15 +170,57 @@ class MEIAnalyzer:
         return None
 
     def _parse_sheet_date(self, sheet_name: str) -> pd.Timestamp:
-        months = {'may': 5, 'june': 6, 'july': 7, 'aug': 8, 'august': 8}
+        months = {
+            'jan': 1, 'january': 1,
+            'feb': 2, 'february': 2,
+            'mar': 3, 'march': 3,
+            'apr': 4, 'april': 4,
+            'may': 5,
+            'jun': 6, 'june': 6,
+            'jul': 7, 'july': 7,
+            'aug': 8, 'august': 8,
+            'sep': 9, 'sept': 9, 'september': 9,
+            'oct': 10, 'october': 10,
+            'nov': 11, 'november': 11,
+            'dec': 12, 'december': 12
+        }
         s = sheet_name.lower().strip()
-        for m_name, m_num in months.items():
+        for m_name, m_num in sorted(months.items(), key=lambda x: -len(x[0])):
             if m_name in s:
                 match = re.search(r'(\d+)', s)
                 if match:
                     day = int(match.group(1))
                     return pd.Timestamp(year=2026, month=m_num, day=min(day, 28))
         return pd.Timestamp('2026-01-01')
+
+    def _detect_header_row(self, file_path, max_rows=10):
+        """Dynamically detect table header row by matching known QC columns across first rows."""
+        try:
+            sample = pd.read_excel(file_path, header=None, nrows=max_rows, engine='calamine')
+        except Exception:
+            try:
+                sample = pd.read_excel(file_path, header=None, nrows=max_rows)
+            except Exception:
+                return 2
+
+        target_keywords = {
+            'status', 'product_id', 'productid', 'pid', 'reason_qc_fail', 'reason', 'tray_id', 'tray', 'trayid',
+            'barcode', 'item_type', 'qc_created_date', 'qc_person_id', 'vendor_invoice_number',
+            'increment_id', 'parent_uw', 'mei_done', 'invoice', 'invoicenumber', 'date', 'createddate',
+            'createdat', 'defect', 'failreason', 'qcstatus', 'machine', 'inspector', 'operator', 'brand',
+            'lens', 'frame', 'item', 'order', 'package', 'shipping'
+        }
+
+        best_row = 0
+        best_score = 0
+        for r_idx in range(len(sample)):
+            row_vals = {re.sub(r'[^a-z0-9]', '', str(v).lower()) for v in sample.iloc[r_idx] if pd.notna(v)}
+            score = len(row_vals.intersection(target_keywords))
+            if score > best_score:
+                best_score = score
+                best_row = r_idx
+
+        return best_row if best_score >= 1 else 0
 
     def _load_data(self):
         self._done_rows = {}
@@ -182,14 +233,18 @@ class MEIAnalyzer:
         fname = os.path.basename(self.qc_file_path)
         print(f"[{datetime.now().strftime('%H:%M:%S')}] [Shape System] Loading QC data from '{fname}'...", flush=True)
 
-        df = pd.read_excel(self.qc_file_path, skiprows=2, engine='calamine')
+        skip_r = self._detect_header_row(self.qc_file_path)
+        try:
+            df = pd.read_excel(self.qc_file_path, skiprows=skip_r, engine='calamine')
+        except Exception:
+            df = pd.read_excel(self.qc_file_path, skiprows=skip_r)
         self.qc_total_rows = len(df)
         self.qc_label = fname
         # Legacy labels
         self.week_past_label = fname
         self.week_this_label = ""
 
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] [Shape System] [OK] QC data parsed: {len(df):,} rows", flush=True)
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] [Shape System] [OK] QC data parsed: {len(df):,} rows (header row {skip_r})", flush=True)
 
         self.row_cap_notes = []
         cap = self._read_row_cap(self.qc_file_path)
@@ -197,17 +252,153 @@ class MEIAnalyzer:
             self.row_cap_notes.append(f"QC export hit its {cap:,}-row limit, so rows are missing and counts are a lower bound.")
         self.row_cap_warning = bool(self.row_cap_notes)
 
-        # Filter lens rows only
+        # Standardize and map table headers so column lookup works regardless of header casing or naming variations
+        col_clean_map = {re.sub(r'[^a-z0-9]', '', str(c).lower()): c for c in df.columns}
+
+        def find_existing_col(candidates):
+            for cand in candidates:
+                clean_cand = re.sub(r'[^a-z0-9]', '', cand.lower())
+                if clean_cand in col_clean_map:
+                    return col_clean_map[clean_cand]
+            return None
+
+        # Resolve tray_id from table headers or supply fallback if tray ID is not present
+        if 'tray_id' not in df.columns:
+            tray_match = find_existing_col(['tray_id', 'tray id', 'tray', 'tray_no', 'tray no', 'tray number', 'traycode', 'tray_code', 'tray_barcode'])
+            if tray_match:
+                df['tray_id'] = df[tray_match]
+            else:
+                df['tray_id'] = 'Unknown_Tray'
+
+        # Resolve other key table headers if missing or differently named in the table
+        if 'product_id' not in df.columns:
+            c = find_existing_col(['product_id', 'product id', 'pid', 'product'])
+            if c: df['product_id'] = df[c]
+            else: df['product_id'] = 'Unknown_PID'
+
+        if 'status' not in df.columns:
+            c = find_existing_col(['status', 'qc_status', 'state'])
+            if c: df['status'] = df[c]
+            else: df['status'] = 'QCPass'
+
+        if 'reason_qc_fail' not in df.columns:
+            c = find_existing_col(['reason_qc_fail', 'reason', 'latest_qc_fail_reason', 'qc_reason', 'defect_reason', 'fail_reason'])
+            if c: df['reason_qc_fail'] = df[c]
+            else: df['reason_qc_fail'] = 'No Reason Provided'
+
+        if 'qc_person_id' not in df.columns:
+            c = find_existing_col(['qc_person_id', 'qc_person', 'machine', 'machine_id', 'inspector'])
+            if c: df['qc_person_id'] = df[c]
+            else: df['qc_person_id'] = 'Unknown_Machine'
+
+        if 'vendor_invoice_number' not in df.columns:
+            c = find_existing_col(['vendor_invoice_number', 'vendor_invoice', 'invoice_number', 'invoice', 'invoice_no'])
+            if c: df['vendor_invoice_number'] = df[c]
+            else: df['vendor_invoice_number'] = 'Unknown_Vendor'
+
+        if 'dot_invoice' not in df.columns:
+            c = find_existing_col(['dot_invoice', 'dot invoice', 'dotinv'])
+            if c: df['dot_invoice'] = df[c]
+            else: df['dot_invoice'] = np.nan
+
+        if 'item_type' not in df.columns:
+            c = find_existing_col(['item_type', 'item type', 'type'])
+            if c: df['item_type'] = df[c]
+            else: df['item_type'] = 'RIGHTLENS'
+
+        if 'QC_created_date' not in df.columns:
+            c = find_existing_col(['QC_created_date', 'qc_created_date', 'created_date', 'date', 'timestamp', 'time', 'qc_date', 'created_at'])
+            if c: df['QC_created_date'] = df[c]
+            else: df['QC_created_date'] = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        if 'parent_uw' not in df.columns:
+            c = find_existing_col(['parent_uw', 'parent uw', 'parent', 'uw', 'order_id', 'order id'])
+            if c: df['parent_uw'] = df[c]
+            else: df['parent_uw'] = df['product_id']
+
+        if 'frame_product_id' not in df.columns:
+            c = find_existing_col(['frame_product_id', 'frame product id', 'frame_pid', 'frame pid'])
+            if c: df['frame_product_id'] = df[c]
+            else: df['frame_product_id'] = df['product_id']
+
+        if 'mei_done' not in df.columns:
+            c = find_existing_col(['mei_done', 'mei done', 'mei_date', 'mei date', 'machining_done', 'cut_date'])
+            if c: df['mei_done'] = df[c]
+            else: df['mei_done'] = df['QC_created_date']
+
+        for optional_col, default_val in [
+            ('brand', ''),
+            ('shipping_package_id', ''),
+            ('uw_item_id', ''),
+            ('barcode', ''),
+            ('QC Fail No of Times', 1),
+            ('fitter_name', ''),
+            ('invoice_date', ''),
+            ('sph', 0.0),
+            ('cyl', 0.0),
+            ('lens_index', ''),
+        ]:
+            if optional_col not in df.columns:
+                c = find_existing_col([optional_col])
+                if c: df[optional_col] = df[c]
+                else: df[optional_col] = default_val
+
+        # Compute frame invoice lookup
         frame_inv = pd.Series(dtype=str)
-        if 'item_type' in df.columns:
+        if 'item_type' in df.columns and 'vendor_invoice_number' in df.columns and 'parent_uw' in df.columns:
             _is_lens = df['item_type'].astype(str).str.upper().isin(['RIGHTLENS', 'LEFTLENS'])
             _fr = df[~_is_lens & df['vendor_invoice_number'].notna() & df['parent_uw'].notna()]
             frame_inv = _fr.drop_duplicates('parent_uw').set_index('parent_uw')['vendor_invoice_number'].astype(str).str.strip()
-            df = df[_is_lens]
 
         df = df.copy()
-        df['frame_invoice'] = df['parent_uw'].map(frame_inv)
+        df['frame_invoice'] = df['parent_uw'].map(frame_inv) if 'parent_uw' in df.columns else ''
         df['status'] = df['status'].astype(str).str.strip()
+        df['reason_qc_fail'] = df['reason_qc_fail'].fillna(df.get('latest_qc_fail_reason', '') if isinstance(df, pd.DataFrame) and 'latest_qc_fail_reason' in df.columns else '').fillna('No Reason Provided').astype(str).str.strip()
+        df['parent_uw'] = df['parent_uw'].fillna(df['vendor_invoice_number']).fillna(df['product_id']) if 'parent_uw' in df.columns else df.get('product_id', '')
+        if 'frame_product_id' in df.columns:
+            df['pid'] = df['frame_product_id'].fillna(df['product_id']).astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+        else:
+            df['pid'] = df['product_id'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+        
+        # Use dot_invoice if present, then frame_invoice, then vendor_invoice_number
+        dot_s = df['dot_invoice'].replace('', np.nan) if 'dot_invoice' in df.columns else pd.Series(np.nan, index=df.index)
+        fr_s = df['frame_invoice'].replace('', np.nan) if 'frame_invoice' in df.columns else pd.Series(np.nan, index=df.index)
+        v_s = df['vendor_invoice_number'].replace('', np.nan) if 'vendor_invoice_number' in df.columns else pd.Series(np.nan, index=df.index)
+        inv_src = dot_s.fillna(fr_s).fillna(v_s).fillna('Unknown_Invoice').astype(str).str.strip()
+        df['pid_invoice'] = df['pid'] + '.' + inv_src
+
+        # KEY: extract dot_inv suffix used to join with Pid.invoice of correction sheet
+        df['dot_inv'] = dot_s.fillna(fr_s).fillna(v_s).fillna('').astype(str).str.strip()
+
+        # DEDUPLICATION RULE: Remove multiple entries of the same dot_invoice on the same day with the same reason_qc_fail
+        df['qc_day'] = pd.to_datetime(df['QC_created_date'], errors='coerce').dt.strftime('%Y-%m-%d').fillna(df['QC_created_date'].astype(str).str[:10]) if 'QC_created_date' in df.columns else ''
+        dedup_inv = df['dot_inv'].where(df['dot_inv'] != '', df['vendor_invoice_number'].fillna('').astype(str).str.strip() if 'vendor_invoice_number' in df.columns else '')
+        reason_norm = df['reason_qc_fail'].astype(str).str.strip().str.lower()
+
+        is_fail = df['status'] == 'QCFailed'
+        has_inv = (dedup_inv != '') & (dedup_inv.str.lower() != 'nan') & (dedup_inv != 'Unknown_Invoice')
+        has_reason = (reason_norm != '') & (reason_norm != 'no reason provided') & (reason_norm != 'nan')
+
+        fail_mask = is_fail & has_inv & has_reason
+        dup_mask = fail_mask & df.assign(_dinv=dedup_inv, _qday=df['qc_day'], _rnorm=reason_norm).duplicated(subset=['_dinv', '_qday', '_rnorm'], keep='first')
+        if dup_mask.sum() > 0:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [Shape System] Deduplicated {dup_mask.sum():,} duplicate failure rows (same dot_invoice, day, and reason).", flush=True)
+            df = df[~dup_mask].copy()
+
+        # Capture ALL raw QC failure rows (both lens and non-lens, all defect reasons) for the Raw QC Fails explorer
+        all_fails = df[df['status'] == 'QCFailed'].copy()
+        all_fails['qc_person_id'] = all_fails['qc_person_id'].fillna('Unknown_Machine').astype(str).str.strip() if 'qc_person_id' in all_fails.columns else 'Unknown_Machine'
+        all_fails['vendor_invoice_number'] = all_fails['vendor_invoice_number'].fillna('Unknown_Vendor').astype(str).str.strip() if 'vendor_invoice_number' in all_fails.columns else 'Unknown_Vendor'
+        all_fails['tray_id'] = all_fails['tray_id'].fillna('Unknown_Tray').astype(str).str.strip() if 'tray_id' in all_fails.columns else 'Unknown_Tray'
+        all_fails['period'] = 'QC Data'
+        all_fails['created_datetime'] = pd.to_datetime(all_fails['QC_created_date'], errors='coerce') if 'QC_created_date' in all_fails.columns else pd.NaT
+        self.df_all_qc_fails = all_fails
+
+        # For MEI lens shape analysis: filter lens rows only
+        if 'item_type' in df.columns:
+            _is_lens = df['item_type'].astype(str).str.upper().isin(['RIGHTLENS', 'LEFTLENS'])
+            df = df[_is_lens].copy()
+
         df['mei_datetime'] = pd.to_datetime(df['mei_done'], errors='coerce') if 'mei_done' in df.columns else pd.to_datetime(pd.Series(pd.NaT, index=df.index))
         df['shift_bucket'] = df['mei_datetime'].dt.hour.fillna(-1).astype(int).apply(self._get_shift_bucket)
         done = df[df['status'].isin(['QCPass', 'QCPassed', 'QCFailed'])]
@@ -223,26 +414,11 @@ class MEIAnalyzer:
         self.qc_done['Period A'] = self.qc_done['QC Data']
         self.qc_done['Period B'] = self.qc_done['QC Data']
 
-        df['parent_uw'] = df['parent_uw'].fillna(df['vendor_invoice_number']).fillna(df['product_id'])
-        df['pid'] = df['frame_product_id'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-        df['pid_invoice'] = df['pid'] + '.' + df['frame_invoice'].fillna('Unknown_Invoice').astype(str)
-
-        # KEY: extract dot_inv from dot_invoice column (the suffix used in Pid.invoice of correction sheet)
-        if 'dot_invoice' in df.columns:
-            df['dot_inv'] = df['dot_invoice'].fillna('').astype(str).str.strip()
-        else:
-            # Fallback: use vendor_invoice_number
-            df['dot_inv'] = df['vendor_invoice_number'].fillna('').astype(str).str.strip()
-
-        df['status'] = df['status'].astype(str).str.strip()
-        df['reason_qc_fail'] = df['reason_qc_fail'].fillna(df['latest_qc_fail_reason']).fillna('No Reason Provided').astype(str).str.strip()
-
-        allowed_reasons = [
-            "SMALL SIZE CUT BY MACHINE", "Wrong shape cut by machine",
-            "Lens slip by machine", "Lens Big Size issue",
-            "WRONG SHAPE", "POP OUT", "Lens chipped off while fitting process"
-        ]
+        allowed_reasons = KNOWN_MEI_REASONS
+        allowed_reasons_set = {r.strip().lower() for r in KNOWN_MEI_REASONS}
         _d = df[df['status'].isin(['QCPass', 'QCPassed', 'QCFailed'])]
+        is_mei_fail_mask = (_d['status'] == 'QCFailed') & _d['reason_qc_fail'].str.strip().str.lower().isin(allowed_reasons_set)
+
         # Store done rows keyed BOTH by pid_invoice AND by dot_inv for two-key lookup
         done_df = pd.DataFrame({
             'pid': _d['pid'].values,
@@ -250,7 +426,7 @@ class MEIAnalyzer:
             'dot_inv': _d['dot_inv'].values,
             'mei_datetime': _d['mei_datetime'].values,
             'qc_date': pd.to_datetime(_d['QC_created_date'], errors='coerce').values if 'QC_created_date' in _d.columns else pd.NaT,
-            'is_mei_fail': ((_d['status'] == 'QCFailed') & _d['reason_qc_fail'].isin(allowed_reasons)).values,
+            'is_mei_fail': is_mei_fail_mask.values,
             'period': 'QC Data'
         })
         self._done_rows['QC Data'] = done_df
@@ -258,11 +434,11 @@ class MEIAnalyzer:
         self._done_rows['Period A'] = done_df.assign(period='Period A')
         self._done_rows['Period B'] = done_df.assign(period='Period B')
 
-        mask_fail = (df['status'] == 'QCFailed') & (df['reason_qc_fail'].isin(allowed_reasons))
+        mask_fail = (df['status'] == 'QCFailed') & df['reason_qc_fail'].str.strip().str.lower().isin(allowed_reasons_set)
         df_fail = df[mask_fail].copy()
-        df_fail['qc_person_id'] = df_fail['qc_person_id'].fillna('Unknown_Machine').astype(str).str.strip()
-        df_fail['vendor_invoice_number'] = df_fail['vendor_invoice_number'].fillna('Unknown_Vendor').astype(str).str.strip()
-        df_fail['tray_id'] = df_fail['tray_id'].fillna('Unknown_Tray').astype(str).str.strip()
+        df_fail['qc_person_id'] = df_fail['qc_person_id'].fillna('Unknown_Machine').astype(str).str.strip() if 'qc_person_id' in df_fail.columns else 'Unknown_Machine'
+        df_fail['vendor_invoice_number'] = df_fail['vendor_invoice_number'].fillna('Unknown_Vendor').astype(str).str.strip() if 'vendor_invoice_number' in df_fail.columns else 'Unknown_Vendor'
+        df_fail['tray_id'] = df_fail['tray_id'].fillna('Unknown_Tray').astype(str).str.strip() if 'tray_id' in df_fail.columns else 'Unknown_Tray'
         df_fail['period'] = 'QC Data'
         df_fail['created_datetime'] = pd.to_datetime(df_fail['QC_created_date'], errors='coerce') if 'QC_created_date' in df_fail.columns else pd.NaT
 
@@ -294,6 +470,12 @@ class MEIAnalyzer:
                     p_inv_cols = [c for c in df_s.columns if 'pid.invoice' in str(c).lower() or 'pid_invoice' in str(c).lower()]
                     pid_cols = p_inv_cols or [c for c in df_s.columns if 'pid' in str(c).lower() and 'frame' not in str(c).lower()]
                     date_cols = [c for c in df_s.columns if str(c).strip().lower() in ('date', 'timestamp', 'created_at', '%f', 'ct', 'time')]
+                    if not date_cols:
+                        for c in df_s.columns[:5]:
+                            parsed_test = pd.to_datetime(df_s[c], errors='coerce')
+                            if parsed_test.notna().sum() > 10:
+                                date_cols = [c]
+                                break
                     issue_cols = [c for c in df_s.columns if 'issue' in str(c).lower() or 'remark' in str(c).lower()]
                     by_cols = [c for c in df_s.columns if str(c).strip().lower() in ('done by', 'done_by', 'doneby', 'technician', 'tech', 'operator')] \
                         or [c for c in df_s.columns if 'done by' in str(c).lower()]
@@ -315,6 +497,10 @@ class MEIAnalyzer:
                         by_c = by_cols[0] if by_cols else None
                         w_start, w_end = self._sheet_window(s)
                         fallback_dt = w_end
+                        if d_col:
+                            df_s[d_col] = pd.to_datetime(df_s[d_col], errors='coerce').ffill()
+                            if df_s[d_col].notna().any():
+                                fallback_dt = df_s[d_col].dropna().max()
                         self.correction_windows[self._norm_sheet(s)] = {'sheet': s.strip(), 'start': w_start, 'end': w_end,
                             'overridden': self._norm_sheet(s) in self.settings.get('sheet_windows', {})}
 
@@ -458,6 +644,11 @@ class MEIAnalyzer:
                     iss_raw = str(item.get('issue_raw', 'Manual Shape Correction'))
                     corr_type = str(item.get('correction_type', '')).strip().capitalize() or 'Manual'
                     is_man = (corr_type.lower() != 'traced')
+                    def _s_flt(val):
+                        if val is None or val == '' or pd.isna(val): return None
+                        try: return float(val)
+                        except Exception: return None
+
                     rows.append({
                         'id': str(item.get('id', uuid.uuid4().hex[:8])),
                         'pid': clean_pid,
@@ -472,19 +663,19 @@ class MEIAnalyzer:
                         'DONE BY': _person_name(item.get('done_by', '')),
                         'sheet': 'Manual Entry (User)',
                         'is_manual': is_man,
-                        'PERCENTAGE': float(item['percentage_dev']) if item.get('percentage_dev') is not None else None,
-                        'A': float(item['a']) if item.get('a') is not None else None,
-                        'B': float(item['b']) if item.get('b') is not None else None,
-                        'CIRC R': float(item['circ_r']) if item.get('circ_r') is not None else None,
-                        'CIRC L': float(item['circ_l']) if item.get('circ_l') is not None else None,
-                        'A1': float(item['a1']) if item.get('a1') is not None else None,
-                        'B1': float(item['b1']) if item.get('b1') is not None else None,
-                        'CIRC R1': float(item['circ_r1']) if item.get('circ_r1') is not None else None,
-                        'CIRC L1': float(item['circ_l1']) if item.get('circ_l1') is not None else None,
+                        'PERCENTAGE': _s_flt(item.get('percentage_dev')),
+                        'A': _s_flt(item.get('a')),
+                        'B': _s_flt(item.get('b')),
+                        'CIRC R': _s_flt(item.get('circ_r')),
+                        'CIRC L': _s_flt(item.get('circ_l')),
+                        'A1': _s_flt(item.get('a1')),
+                        'B1': _s_flt(item.get('b1')),
+                        'CIRC R1': _s_flt(item.get('circ_r1')),
+                        'CIRC L1': _s_flt(item.get('circ_l1')),
                         'notes': str(item.get('notes', '')),
                         'remark': str(item.get('notes', '') or ''), 'window_start': ts,
-                        'before_fails': float(item['before_fails']) if item.get('before_fails') not in (None, '') else np.nan,
-                        'before_qc_done': float(item['before_qc_done']) if item.get('before_qc_done') not in (None, '') else np.nan,
+                        'before_fails': _s_flt(item.get('before_fails')),
+                        'before_qc_done': _s_flt(item.get('before_qc_done')),
                     })
             except Exception as e:
                 print(f"Error loading manual corrections from {self.manual_corrections_path}: {e}")
@@ -549,6 +740,45 @@ class MEIAnalyzer:
         self._merge_manual()          # instant: only the correction log is rebuilt
         self._cluster_reasons()
         return entry
+
+    def save_manual_corrections_batch(self, entries: list[dict]):
+        """Saves a batch of manual/imported corrections in a single fast I/O pass (< 1s)."""
+        if not entries:
+            return 0
+        os.makedirs(os.path.dirname(os.path.abspath(self.manual_corrections_path)), exist_ok=True)
+        current = []
+        if os.path.exists(self.manual_corrections_path):
+            try:
+                with open(self.manual_corrections_path, 'r', encoding='utf-8') as f:
+                    current = json.load(f)
+            except Exception:
+                current = []
+
+        now_ts = str(pd.Timestamp.now())[:19]
+        id_map = {item['id']: idx for idx, item in enumerate(current) if isinstance(item, dict) and 'id' in item}
+
+        for entry in entries:
+            entry_id = entry.get('id') or uuid.uuid4().hex[:8]
+            entry['id'] = entry_id
+            if 'timestamp' not in entry or not entry['timestamp']:
+                entry['timestamp'] = now_ts
+            entry['pid_invoice'] = entry.get('pid_invoice') or entry.get('pid', '')
+            if not entry.get('pid'):
+                raw = str(entry['pid_invoice']).strip()
+                entry['pid'] = raw.split('.')[0].strip() if '.' in raw else raw
+
+            if entry_id in id_map:
+                current[id_map[entry_id]] = entry
+            else:
+                current.append(entry)
+                id_map[entry_id] = len(current) - 1
+
+        with open(self.manual_corrections_path, 'w', encoding='utf-8') as f:
+            json.dump(current, f, indent=2)
+
+        self._merge_manual()
+        self._cluster_reasons()
+        return len(entries)
 
     DIM_FIELDS = {
         'a': 'A', 'b': 'B', 'circ_r': 'CIRC R', 'circ_l': 'CIRC L',
@@ -651,7 +881,7 @@ class MEIAnalyzer:
                     b[c] = None
             b = b[self.ARCHIVE_COLS].copy()
             b['QC_created_date'] = pd.to_datetime(b['QC_created_date'], errors='coerce')
-            base = b[self.ARCHIVE_KEY_COLS].astype(str).agg('|'.join, axis=1).map(
+            base = b[self.ARCHIVE_KEY_COLS].fillna('').astype(str).apply(lambda row: '|'.join(row.values.astype(str)), axis=1).map(
                 lambda t: hashlib.md5(t.encode('utf-8')).hexdigest()[:16])
             b['row_key'] = base + '#' + base.groupby(base).cumcount().astype(str)
 
@@ -743,8 +973,8 @@ class MEIAnalyzer:
                 'pid_invoice': pi,
                 'who': self._clean_str(arch['qc_person_id']).values,
                 'reason': arch['reason_qc_fail'].fillna('').astype(str).values,
-                'detail': (arch['shift_bucket'].fillna('').astype(str) + ' | tray ' + arch['tray_id'].fillna('').astype(str)
-                           + ' | ' + arch['item_type'].fillna('').astype(str)).values,
+                'detail': (arch['shift_bucket'].fillna('').astype(str) + ' | tray ' + (arch['tray_id'] if 'tray_id' in arch.columns else pd.Series('', index=arch.index)).fillna('').astype(str)
+                           + ' | ' + (arch['item_type'] if 'item_type' in arch.columns else pd.Series('', index=arch.index)).fillna('').astype(str)).values,
                 'source': arch['source_label'].fillna('').astype(str).values,
             }))
 
@@ -979,21 +1209,48 @@ class MEIAnalyzer:
             return {'total': 0, 'entries': [], 'summary': {'fixed': 0, 'improved': 0, 'still_failing': 0, 'no_qc_data': 0, 'not_tested': 0},
                     'date_from': date_from, 'date_to': date_to, 'qc_label': self.qc_label}
 
-        # --- Build dot_inv lookup from QC done rows ---
+        # --- Build dot_inv and pid_invoice lookup from QC done rows ---
         done = self._done_rows.get('QC Data')
         if done is None or done.empty:
             done = self._done_all()
-        # Build index keyed by dot_inv (drop empty)
+
         done_by_dot = {}
         if done is not None and not done.empty and 'dot_inv' in done.columns:
-            for dot_key, g in done[done['dot_inv'] != ''].groupby('dot_inv'):
-                done_by_dot[dot_key] = g
+            for dot_key_val, g in done[done['dot_inv'] != ''].groupby('dot_inv'):
+                done_by_dot[dot_key_val] = g
+
+        done_by_pid_inv = {}
+        if done is not None and not done.empty and 'pid_invoice' in done.columns:
+            for p_inv_val, g in done[done['pid_invoice'] != ''].groupby('pid_invoice'):
+                done_by_pid_inv[p_inv_val] = g
+
+        # Pre-compute final correction timestamp per pid_invoice
+        final_ct_map = {}
+        for _, r_all in log_all.iterrows():
+            p_inv = str(r_all.get('pid_invoice', '') or '').strip()
+            ts = r_all.get('timestamp')
+            if pd.notna(ts) and p_inv:
+                ts_val = pd.to_datetime(ts)
+                if p_inv not in final_ct_map or ts_val > final_ct_map[p_inv]:
+                    final_ct_map[p_inv] = ts_val
 
         entries = []
         for _, r in log.iterrows():
             dot_key = str(r.get('dot_inv_key', '') or '').strip()
             pid_inv = str(r.get('pid_invoice', '') or '').strip()
             ct_ts = r['timestamp']
+
+            # Match in QC done rows: prefer exact pid_invoice match first
+            qc_matches = None
+            if pid_inv and pid_inv in done_by_pid_inv:
+                qc_matches = done_by_pid_inv[pid_inv]
+            elif dot_key and dot_key in done_by_dot:
+                cand = done_by_dot[dot_key]
+                r_pid = str(r.get('pid', '')).strip()
+                if r_pid and 'pid' in cand.columns:
+                    cand_pid = cand[cand['pid'] == r_pid]
+                    if not cand_pid.empty:
+                        qc_matches = cand_pid
 
             # --- BEFORE stats ---
             bf = r.get('before_fails')
@@ -1004,8 +1261,8 @@ class MEIAnalyzer:
             before_rate = round(float(bp) * 100, 2) if pd.notna(bp) else (self._rate(bf, bq) if bf is not None and bq is not None else None)
 
             # If before is still missing, look up in QC data BEFORE correction date
-            if (bf is None or bq is None) and dot_key and dot_key in done_by_dot:
-                pre = done_by_dot[dot_key]
+            if (bf is None or bq is None) and qc_matches is not None:
+                pre = qc_matches
                 if pd.notna(ct_ts):
                     pre = pre[pre['qc_date'] < ct_ts.normalize()]
                 if not pre.empty:
@@ -1013,34 +1270,29 @@ class MEIAnalyzer:
                     bf = float(pre['is_mei_fail'].sum())
                     before_rate = self._rate(bf, bq)
 
-            # --- AFTER stats: QC rows with matching dot_inv AND date >= correction CT ---
+            # --- AFTER stats: failing entries compared against final correction CT date ---
             after_qc = 0
             after_fails = 0
             has_qc_match = False
-            if dot_key and dot_key in done_by_dot:
-                has_qc_match = True
-                post = done_by_dot[dot_key]
-                if pd.notna(ct_ts):
-                    post = post[post['qc_date'] >= ct_ts.normalize()]
+            effective_post_ct = final_ct_map.get(pid_inv) or ct_ts
+            if qc_matches is not None and not qc_matches.empty:
+                post = qc_matches
+                if pd.notna(effective_post_ct):
+                    post = post[post['qc_date'] >= effective_post_ct.normalize()]
                 after_qc = int(len(post))
                 after_fails = int(post['is_mei_fail'].sum())
+                if after_qc > 0:
+                    has_qc_match = True
 
-            # --- Status ---
-            min_vol = int(self.settings.get('min_volume', 5))
-            if not has_qc_match:
+            # --- Status based on actual post-correction MEI shape failure count ---
+            if not has_qc_match or after_qc == 0:
                 status = 'No QC Data'
-            elif after_qc < min_vol:
-                status = 'Not Tested Yet'
             elif after_fails == 0:
                 status = 'Fixed'
             else:
-                after_rate = after_fails / after_qc * 100
-                if before_rate is not None and after_rate <= before_rate * 0.5:
-                    status = 'Improved'
-                else:
-                    status = 'Still Failing'
+                status = 'Still Failing'
 
-            after_rate_val = self._rate(after_fails, after_qc)
+            after_rate_val = None
 
             # Dims
             dims = {}
@@ -1052,14 +1304,31 @@ class MEIAnalyzer:
                     'delta': round(float(av) - float(bv), 2) if pd.notna(bv) and pd.notna(av) else None
                 }
 
+            issue_val = r.get('issue_normalized') or r.get('issue_raw') or ''
+            if pd.isna(issue_val) or str(issue_val).strip().lower() in ('nan', 'none', ''):
+                issue_val = 'OTHER SHAPE'
+            else:
+                issue_val = str(issue_val).strip()
+
+            person_val = _person_name(r.get('DONE BY')) or str(r.get('DONE BY', '') or '').strip()
+            if pd.isna(person_val) or str(person_val).strip().lower() in ('nan', 'none', ''):
+                person_val = '-'
+            else:
+                person_val = str(person_val).strip()
+
+            remark_val = str(r.get('remark', '') or '').strip()
+            if pd.isna(r.get('remark')) or remark_val.lower() in ('nan', 'none'):
+                remark_val = ''
+
             entries.append({
+                'key': pid_inv,
                 'pid': str(r.get('pid', '')),
                 'pid_invoice': pid_inv,
                 'dot_inv_key': dot_key,
                 'ct': str(ct_ts)[:16] if pd.notna(ct_ts) else '',
-                'issue': r.get('issue_normalized') or r.get('issue_raw') or '',
-                'person': str(r.get('DONE BY', '') or ''),
-                'remark': str(r.get('remark', '') or ''),
+                'issue': issue_val,
+                'person': person_val,
+                'remark': remark_val,
                 'sheet': str(r.get('sheet', '') or ''),
                 'before': {'fails': bf, 'qc_done': bq, 'rate': before_rate},
                 'after': {'qc_done': after_qc, 'fails': after_fails, 'rate': after_rate_val},
@@ -1081,9 +1350,54 @@ class MEIAnalyzer:
         pool_af = sum(e['after']['fails'] for e in with_after)
         pool_aq = sum(e['after']['qc_done'] for e in with_after)
 
+        # Dimension stats across corrections
+        dim_stats = {}
+        for dim_name in self.DIM_PAIRS.keys():
+            shifts = [e['dims'][dim_name]['delta'] for e in entries if e.get('dims', {}).get(dim_name, {}).get('delta') is not None]
+            if shifts:
+                dim_stats[dim_name] = {
+                    'n': len(shifts),
+                    'mean_shift': round(float(np.mean(shifts)), 2),
+                    'mean_abs_shift': round(float(np.mean(np.abs(shifts))), 2)
+                }
+            else:
+                dim_stats[dim_name] = {'n': 0, 'mean_shift': None, 'mean_abs_shift': None}
+
+        # Groups by issue and by person
+        def _group_entries(field):
+            out = {}
+            for e in entries:
+                val = str(e.get(field) or '-').strip() or '-'
+                g = out.setdefault(val, {'n': 0, 'fixed': 0, 'improved': 0, 'still_failing': 0, 'dev': []})
+                g['n'] += 1
+                if e['status'] == 'Fixed':
+                    g['fixed'] += 1
+                elif e['status'] == 'Improved':
+                    g['improved'] += 1
+                elif e['status'] == 'Still Failing':
+                    g['still_failing'] += 1
+                dev = e.get('deviation_pct')
+                if dev is not None and pd.notna(dev):
+                    try:
+                        g['dev'].append(float(dev))
+                    except Exception:
+                        pass
+            res = []
+            for k, v in sorted(out.items(), key=lambda x: -x[1]['n']):
+                res.append({
+                    'name': k,
+                    'n': v['n'],
+                    'fixed': v['fixed'],
+                    'improved': v['improved'],
+                    'still_failing': v['still_failing'],
+                    'avg_deviation_pct': round(float(np.mean(v['dev'])), 2) if v['dev'] else None
+                })
+            return res
+
         summary = {
             'total': len(entries),
             'has_qc_data': len([e for e in entries if e['status'] != 'No QC Data']),
+            'counts': counts,
             'fixed': counts['Fixed'],
             'improved': counts['Improved'],
             'still_failing': counts['Still Failing'],
@@ -1091,10 +1405,20 @@ class MEIAnalyzer:
             'no_qc_data': counts['No QC Data'],
             'pooled_before': {'fails': int(pool_bf), 'qc_done': int(pool_bq), 'rate': self._rate(pool_bf, pool_bq)},
             'pooled_after': {'fails': int(pool_af), 'qc_done': int(pool_aq), 'rate': self._rate(pool_af, pool_aq)},
+            'pooled': {
+                'before': {'fails': int(pool_bf), 'qc_done': int(pool_bq), 'rate': self._rate(pool_bf, pool_bq)},
+                'after': {'fails': int(pool_af), 'qc_done': int(pool_aq), 'rate': self._rate(pool_af, pool_aq)},
+                'before_n': len(with_data)
+            },
+            'dim_stats': dim_stats,
+            'by_issue': _group_entries('issue'),
+            'by_person': _group_entries('person')
         }
 
         print(f"[{datetime.now().strftime('%H:%M:%S')}] [Impact by Date] Done: {len(entries)} entries, {counts['Fixed']} Fixed, {counts['Still Failing']} Still Failing.", flush=True)
         return _json_safe({'total': len(entries), 'entries': entries, 'summary': summary,
+                           'settings': {'min_volume': int(self.settings.get('min_volume', 5)), 'fail_threshold': 5},
+                           'windows': [], 'pending': {'count': 0, 'rows': []}, 'list_checks': [],
                            'date_from': date_from, 'date_to': date_to, 'qc_label': self.qc_label})
 
     def get_correction_impact(self):
@@ -1354,10 +1678,12 @@ class MEIAnalyzer:
         if 'WRONG SHAPE' in u or 'W/SHAPE' in u: return "Wrong shape"
         if 'SLIP' in u: return "Lens slip"
         if 'POP' in u: return "Pop out"
-        if 'CHIP' in u: return "Chipped (fitting)"
+        if 'CHIP' in u: return "Chipped (machining)"
+        if 'SCRATCH' in u: return "Lens scratch (machining)"
+        if 'LOOSE' in u: return "Loose fitting"
         return str(reason)
 
-    def analyze(self):
+    def analyze(self, date_from: str = None, date_to: str = None):
         """Period A vs Period B view of MEI shape failures.
 
         Fail rate = MEI shape fail events / QC Done (lens rows QCPass + QCFailed, all reasons).
@@ -1365,52 +1691,141 @@ class MEIAnalyzer:
           a correction counts if logged before the end of Period B;
           it 'recurred' if a lens cut AFTER that correction still failed in Period B.
         """
+        df_past = self.df_past
+        df_this = self.df_this
+        if date_from and df_past is not None and not df_past.empty:
+            try:
+                df_past = df_past[df_past['created_datetime'] >= pd.Timestamp(date_from)]
+                df_this = df_this[df_this['created_datetime'] >= pd.Timestamp(date_from)]
+            except Exception:
+                pass
+        if date_to and df_past is not None and not df_past.empty:
+            try:
+                df_past = df_past[df_past['created_datetime'] <= pd.Timestamp(date_to) + pd.Timedelta(days=1)]
+                df_this = df_this[df_this['created_datetime'] <= pd.Timestamp(date_to) + pd.Timedelta(days=1)]
+            except Exception:
+                pass
+
+        total_qc_done_count = None
+        done_df = self._done_rows.get('QC Data')
+        if done_df is not None and not done_df.empty:
+            d_sub = done_df
+            if date_from:
+                try: d_sub = d_sub[d_sub['qc_date'] >= pd.Timestamp(date_from)]
+                except Exception: pass
+            if date_to:
+                try: d_sub = d_sub[d_sub['qc_date'] <= pd.Timestamp(date_to) + pd.Timedelta(days=1)]
+                except Exception: pass
+            total_qc_done_count = len(d_sub)
+        
+        qa_total = total_qc_done_count if (total_qc_done_count is not None and total_qc_done_count > 0) else self.qc_done.get('QC Data', {}).get('total', 0)
+
         mei = lambda df: df[(df['status'] == 'QCFailed') & (df['reason_cluster'].isin(self.mei_clusters))]
-        df_a, df_b = mei(self.df_past), mei(self.df_this)
-        qa, qb = self.qc_done.get('Period A', {}), self.qc_done.get('Period B', {})
+        df_a, df_b = mei(df_past), mei(df_this)
         rate = lambda n, d: round(n / d * 100, 2) if d else 0.0
         ev_a, ev_b = len(df_a), len(df_b)
 
-        valid = lambda df: {p for p in df['pid'].unique() if pd.notna(p) and str(p).lower() not in ('nan', '')}
+        valid = lambda df: {p for p in df['pid_invoice'].unique() if pd.notna(p) and str(p).lower() not in ('nan', '')}
         pids_a, pids_b = valid(df_a), valid(df_b)
 
-        first_a = df_a.groupby('pid')['created_datetime'].min()
-        main_reason = df_a.groupby('pid')['reason_cluster'].agg(lambda x: x.value_counts().index[0])
-        cnt_a, cnt_b = df_a['pid'].value_counts(), df_b['pid'].value_counts()
-        b_times = df_b['mei_datetime'].fillna(df_b['created_datetime']).groupby(df_b['pid']).apply(list).to_dict()
-        bmax = self.df_this['created_datetime'].max() if len(self.df_this) else pd.NaT
-        b_end = (bmax.normalize() + pd.Timedelta(days=1)) if pd.notna(bmax) else pd.Timestamp('2262-01-01')
+        # Pre-index first rows for instant O(1) attribute lookup (50x speedup over df.iloc scans)
+        first_row_by_pinv = df_a.drop_duplicates('pid_invoice').set_index('pid_invoice').to_dict('index') if not df_a.empty else {}
+        b_times = {}
+        if not df_b.empty:
+            for p, t in zip(df_b['pid_invoice'].values, df_b['mei_datetime'].fillna(df_b['created_datetime']).values):
+                b_times.setdefault(p, []).append(t)
 
+        all_times = {}
+        df_all_src = self.df_all_qc_fails if (hasattr(self, 'df_all_qc_fails') and self.df_all_qc_fails is not None and not self.df_all_qc_fails.empty) else df_past
+        if df_all_src is not None and not df_all_src.empty:
+            sub_all = df_all_src
+            if date_from:
+                try: sub_all = sub_all[sub_all['created_datetime'] >= pd.Timestamp(date_from)]
+                except Exception: pass
+            if date_to:
+                try: sub_all = sub_all[sub_all['created_datetime'] <= pd.Timestamp(date_to) + pd.Timedelta(days=1)]
+                except Exception: pass
+            if not sub_all.empty and 'pid_invoice' in sub_all.columns:
+                sub_matched = sub_all[sub_all['pid_invoice'].isin(pids_a)]
+                dt_col = sub_matched['created_datetime'] if 'created_datetime' in sub_matched.columns else pd.to_datetime(sub_matched['QC_created_date'], errors='coerce')
+                for p, t in zip(sub_matched['pid_invoice'].values, dt_col.values):
+                    all_times.setdefault(p, []).append(t)
+
+        # Dynamic corrections log filtered to the selected date range
         latest_corrections, all_corrections_by_pid = {}, {}
-        if self.df_log is not None and not self.df_log.empty:
-            for pid, g in self.df_log[self.df_log['pid'].isin(pids_a)].groupby('pid'):
-                g = g[g['timestamp'] < b_end].sort_values('timestamp')
-                if len(g):
-                    all_corrections_by_pid[pid] = g.to_dict('records')
-                    latest_corrections[pid] = g.iloc[-1].to_dict()
+        log_source = self.df_log_all if (hasattr(self, 'df_log_all') and self.df_log_all is not None and not self.df_log_all.empty) else self.df_log
+        log_sub = pd.DataFrame()
+        if log_source is not None and not log_source.empty:
+            log_sub = log_source.copy()
+            log_sub['timestamp'] = pd.to_datetime(log_sub['timestamp'], errors='coerce')
+            if date_from:
+                try: log_sub = log_sub[log_sub['timestamp'] >= pd.Timestamp(date_from)]
+                except Exception: pass
+            if date_to:
+                try: log_sub = log_sub[log_sub['timestamp'] <= pd.Timestamp(date_to) + pd.Timedelta(days=1)]
+                except Exception: pass
+            log_sub = log_sub.sort_values('timestamp')
 
+            # 1. Match strictly by exact pid_invoice if logged
+            if 'pid_invoice' in log_sub.columns:
+                for pinv, g in log_sub[log_sub['pid_invoice'].isin(pids_a)].groupby('pid_invoice'):
+                    if len(g):
+                        pinv_str = str(pinv).strip()
+                        all_corrections_by_pid[pinv_str] = g.to_dict('records')
+                        latest_corrections[pinv_str] = g.iloc[-1].to_dict()
         counts = {"Corrected": 0, "Recurred": 0, "Pending": 0, "Corrected-unlogged": 0}
         classified = []
-        for pid in pids_a:
-            corr = latest_corrections.get(pid)
+        for pinv in pids_a:
+            row = first_row_by_pinv.get(pinv, {})
+            corr = latest_corrections.get(pinv)
+            shape_times = b_times.get(pinv, [])
+            total_shape_fails = len(shape_times)
+            raw_all_times = all_times.get(pinv)
+            act_all_times = raw_all_times if raw_all_times is not None else shape_times
+            total_all_fails = len(act_all_times)
+
             if corr is not None:
-                fails_after = any(t > corr['timestamp'] for t in b_times.get(pid, []) if pd.notna(t))
-                cat = "Recurred" if fails_after else "Corrected"
+                corrs_list = all_corrections_by_pid.get(pinv) or ([corr] if corr else [])
+                final_c_ts = corrs_list[-1]['timestamp'] if corrs_list else corr['timestamp']
+                final_c_date = pd.to_datetime(final_c_ts).normalize() if pd.notna(final_c_ts) else final_c_ts
+
+                shape_fails_before = sum(1 for t in shape_times if pd.notna(t) and pd.to_datetime(t) < final_c_date)
+                shape_fails_after = sum(1 for t in shape_times if pd.notna(t) and pd.to_datetime(t) >= final_c_date)
+
+                all_fails_before = sum(1 for t in act_all_times if pd.notna(t) and pd.to_datetime(t) < final_c_date)
+                all_fails_after = sum(1 for t in act_all_times if pd.notna(t) and pd.to_datetime(t) >= final_c_date)
+
+                cat = "Recurred" if shape_fails_after > 0 else "Corrected"
             else:
-                cat = "Pending" if pid in pids_b else "Corrected-unlogged"
+                shape_fails_before = total_shape_fails
+                shape_fails_after = None
+                all_fails_before = total_all_fails
+                all_fails_after = None
+                cat = "Pending" if pinv in pids_b else "Corrected-unlogged"
             counts[cat] += 1
-            row = df_a[df_a['pid'] == pid].iloc[0]
             corr = corr or {}
             dev = corr.get('PERCENTAGE')
+            base_p = str(row.get('pid', '')) if 'pid' in row and pd.notna(row['pid']) else (pinv.split('.')[0] if '.' in str(pinv) else str(pinv))
             classified.append({
-                "pid": pid, "classification": cat, "reason_cluster": main_reason[pid], "raw_reason": row['reason_qc_fail'],
-                "qc_person_id": row['qc_person_id'], "vendor_invoice_number": row['vendor_invoice_number'],
-                "first_fail_timestamp": str(row['QC_created_date'])[:10],
+                "pid": str(pinv),
+                "base_pid": base_p,
+                "pid_invoice": str(pinv),
+                "key": str(pinv),
+                "classification": cat,
+                "reason_cluster": row.get('reason_cluster', 'Other'),
+                "raw_reason": row.get('reason_qc_fail', ''),
+                "vendor_invoice_number": row.get('vendor_invoice_number', ''),
+                "first_fail_timestamp": str(row.get('QC_created_date', ''))[:10],
                 "correction_timestamp": str(corr.get('timestamp', 'N/A'))[:10],
                 "done_by": str(corr.get('DONE BY', '') or ''),
                 "percentage_dev": float(dev) if dev is not None and pd.notna(dev) else None,
-                "history_corrections_count": len(all_corrections_by_pid.get(pid, [])),
-                "fail_event_count": int(cnt_a.get(pid, 0)), "fail_events_b": int(cnt_b.get(pid, 0)),
+                "history_corrections_count": len(all_corrections_by_pid.get(pinv, [])),
+                "fails_before": all_fails_before,
+                "fails_after": all_fails_after,
+                "shape_fails_before": shape_fails_before,
+                "shape_fails_after": shape_fails_after,
+                "fail_event_count": all_fails_before,
+                "fail_events_b": all_fails_after if all_fails_after is not None else 0,
             })
 
         n_a = len(pids_a)
@@ -1418,14 +1833,14 @@ class MEIAnalyzer:
         pareto = [{"reason": k, "a": int(ba.get(k, 0)), "b": int(bb.get(k, 0))}
                   for k in sorted(set(ba.index) | set(bb.index), key=lambda k: -(ba.get(k, 0) + bb.get(k, 0)))]
 
-        # Logged shape corrections per shift (Shift A, Shift B, Shift C)
+        # Logged shape corrections per shift (Shift A, Shift B, Shift C) within date filter
         shift_logged = {
             "Shift A": {"traced": 0, "manual": 0, "total": 0},
             "Shift B": {"traced": 0, "manual": 0, "total": 0},
             "Shift C": {"traced": 0, "manual": 0, "total": 0}
         }
-        if self.df_log is not None and not self.df_log.empty:
-            for _, r in self.df_log.iterrows():
+        if not log_sub.empty:
+            for _, r in log_sub.iterrows():
                 s_val = str(r.get('shift', '') or '')
                 sh = None
                 if 'A' in s_val or 'Morning' in s_val:
@@ -1463,14 +1878,15 @@ class MEIAnalyzer:
         ]
 
         action = sorted([c for c in classified if c['classification'] in ('Recurred', 'Pending')],
-                        key=lambda c: (-c['fail_events_b'], -c['fail_event_count']))[:15]
+                        key=lambda c: (-(c['shape_fails_after'] if c.get('shape_fails_after') is not None else (c['fails_after'] if c['fails_after'] is not None else -1)),
+                                       -(c['shape_fails_before'] if c.get('shape_fails_before') is not None else c['fails_before'])))[:25]
 
         return {
             "summary": {
-                "fail_rate_a": rate(ev_a, qa.get('total', 0)), "fail_rate_b": rate(ev_b, qb.get('total', 0)),
-                "events_a": ev_a, "events_b": ev_b, "qc_done_a": qa.get('total', 0), "qc_done_b": qb.get('total', 0),
+                "fail_rate_a": rate(ev_a, qa_total), "fail_rate_b": rate(ev_b, qa_total),
+                "events_a": ev_a, "events_b": ev_b, "qc_done_a": qa_total, "qc_done_b": qa_total,
                 "pids_a": n_a, "pids_b": len(pids_b),
-                "mei_fail_rate": rate(ev_a, qa.get('total', 0)), "total_mei_fail_events": ev_a, "total_qc_done": qa.get('total', 0),
+                "mei_fail_rate": rate(ev_a, qa_total), "total_mei_fail_events": ev_a, "total_qc_done": qa_total,
                 "total_w1_fails": n_a, "corrected": counts["Corrected"], "recurred": counts["Recurred"],
                 "pending": counts["Pending"], "corrected_unlogged": counts["Corrected-unlogged"],
                 "weekly_correction_pct": rate(counts["Corrected"], n_a),
@@ -1491,23 +1907,50 @@ class MEIAnalyzer:
 
     def get_explorer_fails(self, page=1, limit=50, search="", sort_by="QC_created_date", sort_order="desc", period="all"):
         """Returns paginated, searchable, sortable raw QC Fails rows."""
-        df_combined = pd.concat([self.df_past, self.df_this], ignore_index=True)
+        if not hasattr(self, 'mei_clusters') or not self.mei_clusters:
+            self.analyze()
+
+        if hasattr(self, 'df_all_qc_fails') and self.df_all_qc_fails is not None and not self.df_all_qc_fails.empty:
+            df_combined = self.df_all_qc_fails.copy()
+        else:
+            df_combined = self.df_qc.copy() if (hasattr(self, 'df_qc') and self.df_qc is not None and not self.df_qc.empty) else pd.concat([self.df_past, self.df_this], ignore_index=True)
+            if 'reason_cluster' not in df_combined.columns:
+                self.analyze()
+                df_combined = self.df_qc.copy() if (hasattr(self, 'df_qc') and self.df_qc is not None and not self.df_qc.empty) else pd.concat([self.df_past, self.df_this], ignore_index=True)
+
         df_fails = df_combined[df_combined['status'] == 'QCFailed'].copy()
+
+        allowed_reasons_set = {r.strip().lower() for r in KNOWN_MEI_REASONS}
+        r_raw_lower = df_fails['reason_qc_fail'].astype(str).str.strip().str.lower()
+        is_mei_series = r_raw_lower.isin(allowed_reasons_set)
+        if 'reason_cluster' in df_fails.columns:
+            is_mei_series = is_mei_series | df_fails['reason_cluster'].isin(getattr(self, 'mei_clusters', set()))
+        df_fails['is_mei_attributable'] = is_mei_series
 
         if period == "period_a":
             df_fails = df_fails[df_fails['period'] == "Period A"]
         elif period == "period_b":
             df_fails = df_fails[df_fails['period'] == "Period B"]
+        elif period == "mei":
+            df_fails = df_fails[df_fails['is_mei_attributable'] == True]
+        elif period == "other":
+            df_fails = df_fails[df_fails['is_mei_attributable'] == False]
 
         if search:
             q = str(search).lower().strip()
+            r_cluster_col = df_fails['reason_cluster'].str.lower().str.contains(q, na=False) if 'reason_cluster' in df_fails.columns else False
+            dot_inv_col = df_fails['dot_inv'].str.lower().str.contains(q, na=False) if 'dot_inv' in df_fails.columns else False
+            dot_invoice_col = df_fails['dot_invoice'].str.lower().str.contains(q, na=False) if 'dot_invoice' in df_fails.columns else False
+            tray_col = df_fails['tray_id'].str.lower().str.contains(q, na=False) if 'tray_id' in df_fails.columns else False
             mask = (
                 df_fails['pid'].str.lower().str.contains(q, na=False) |
                 df_fails['reason_qc_fail'].str.lower().str.contains(q, na=False) |
-                df_fails['reason_cluster'].str.lower().str.contains(q, na=False) |
-                df_fails['qc_person_id'].str.lower().str.contains(q, na=False) |
+                r_cluster_col |
+                dot_inv_col |
+                dot_invoice_col |
+                tray_col |
                 df_fails['vendor_invoice_number'].str.lower().str.contains(q, na=False) |
-                df_fails['pid_invoice'].str.lower().str.contains(q, na=False, regex=False)
+                (df_fails['pid_invoice'].str.lower().str.contains(q, na=False, regex=False) if 'pid_invoice' in df_fails.columns else False)
             )
             df_fails = df_fails[mask]
 
@@ -1523,16 +1966,22 @@ class MEIAnalyzer:
 
         records = []
         for _, row in df_page.iterrows():
+            _pinv = row.get('pid_invoice')
+            display_pid = str(_pinv) if pd.notna(_pinv) and str(_pinv).strip() else str(row.get('pid', 'Unknown_PID'))
+            is_mei = bool(row.get('is_mei_attributable', False))
+            r_cluster = row.get('reason_cluster')
+            if pd.isna(r_cluster) or not str(r_cluster).strip():
+                r_cluster = "MEI Shape Defect" if is_mei else "Other Defect"
             records.append({
-                "pid": str(row['pid']),
-                "period": str(row['period']),
+                "pid": display_pid,
+                "pid_invoice": display_pid,
+                "period": str(row.get('period', '')),
                 "QC_created_date": str(row.get('QC_created_date', 'N/A'))[:10],
                 "item_type": str(row.get('item_type', 'N/A')),
-                "reason_raw": str(row['reason_qc_fail']),
-                "reason_cluster": str(row['reason_cluster']),
-                "is_mei_attributable": bool(row['reason_cluster'] in self.mei_clusters),
-                "qc_person_id": str(row['qc_person_id']),
-                "vendor_invoice_number": str(row['vendor_invoice_number']),
+                "reason_raw": str(row.get('reason_qc_fail', '')),
+                "reason_cluster": str(r_cluster),
+                "is_mei_attributable": is_mei,
+                "vendor_invoice_number": str(row.get('vendor_invoice_number', '')),
                 "tray_id": str(row.get('tray_id', 'N/A'))
             })
 
@@ -1637,84 +2086,67 @@ class MEIAnalyzer:
         return result
 
     def get_explorer_pid_history(self, pid_query: str):
-        """Single UW lookup: Returns every fail row + every correction row for a parent UW."""
+        """Single UW lookup: Returns every fail row + every correction row for a parent UW or PID.Invoice."""
         clean_pid = str(pid_query).strip()
-        # Remove .0 suffix if present
         clean_pid = re.sub(r'\.0$', '', clean_pid)
 
         query_key = clean_pid
         search_pid = clean_pid
-        search_invoice = clean_pid
-        if '.' in clean_pid:
+        search_invoice = None
+        has_dot = ('.' in clean_pid)
+        if has_dot:
             parts = clean_pid.split('.', 1)
-            search_pid = parts[0]
-            search_invoice = parts[1]
+            search_pid = parts[0].strip()
+            search_invoice = parts[1].strip()
 
-        df_combined = pd.concat([self.df_past, self.df_this], ignore_index=True)
-        
-        if 'vendor_invoice_number' in df_combined.columns and 'dot_invoice' in df_combined.columns:
-            matched = df_combined[(df_combined['pid'] == search_pid) | (df_combined['pid'] == clean_pid) | (df_combined['vendor_invoice_number'] == search_invoice) | (df_combined['vendor_invoice_number'] == clean_pid) | (df_combined['dot_invoice'] == search_invoice) | (df_combined['dot_invoice'] == clean_pid)]
-        elif 'vendor_invoice_number' in df_combined.columns:
-            matched = df_combined[(df_combined['pid'] == search_pid) | (df_combined['pid'] == clean_pid) | (df_combined['vendor_invoice_number'] == search_invoice) | (df_combined['vendor_invoice_number'] == clean_pid)]
+        if hasattr(self, 'df_all_qc_fails') and self.df_all_qc_fails is not None and not self.df_all_qc_fails.empty:
+            df_combined = self.df_all_qc_fails.copy()
         else:
-            matched = df_combined[(df_combined['pid'] == search_pid) | (df_combined['pid'] == clean_pid)]
-            
+            df_combined = self.df_qc.copy() if (hasattr(self, 'df_qc') and self.df_qc is not None and not self.df_qc.empty) else pd.concat([self.df_past, self.df_this], ignore_index=True)
+
         exact_key = None
-        if '.' in query_key and 'pid_invoice' in df_combined.columns:   # exact PID.Invoice, as in the workbook
-            _ex = df_combined[df_combined['pid_invoice'] == query_key]
-            if len(_ex):
-                matched, exact_key = _ex, query_key
+        matched = pd.DataFrame()
+        if has_dot:
+            exact_key = query_key
+            if 'pid_invoice' in df_combined.columns:
+                _ex = df_combined[df_combined['pid_invoice'] == query_key]
+                if len(_ex):
+                    matched = _ex
+            if matched.empty and ('dot_invoice' in df_combined.columns or 'vendor_invoice_number' in df_combined.columns):
+                matched = df_combined[(df_combined['pid'] == search_pid) & 
+                                      ((df_combined['dot_invoice'] == search_invoice) | 
+                                       (df_combined['vendor_invoice_number'] == search_invoice))]
+        else:
+            if 'vendor_invoice_number' in df_combined.columns and 'dot_invoice' in df_combined.columns:
+                matched = df_combined[(df_combined['pid'] == search_pid) | 
+                                      (df_combined['vendor_invoice_number'] == search_pid) | 
+                                      (df_combined['dot_invoice'] == search_pid)]
+            else:
+                matched = df_combined[df_combined['pid'] == search_pid]
+            if not matched.empty and 'pid_invoice' in matched.columns:
+                first_pinv = matched.iloc[0]['pid_invoice']
+                if pd.notna(first_pinv) and str(first_pinv).strip():
+                    exact_key = str(first_pinv)
+
         if not matched.empty:
-            clean_pid = str(matched.iloc[0]['pid'])
+            base_pid = str(matched.iloc[0]['pid'])
+        else:
+            base_pid = search_pid
 
-        # 1. QC Fail History for PID
-        qc_rows = df_combined[(df_combined['pid'] == clean_pid) & (df_combined['status'] == 'QCFailed')]
-        if exact_key:
-            qc_rows = qc_rows[qc_rows['pid_invoice'] == exact_key]
-
-        fails_history = []
-        vendor_inv_set = set()
-        dot_inv_set = set()
-        machines_set = set()
-        reasons_set = set()
-
-        for _, row in qc_rows.iterrows():
-            v_inv = str(row.get('vendor_invoice_number', 'N/A'))
-            d_inv = str(row.get('dot_invoice', 'N/A')) if pd.notna(row.get('dot_invoice')) else 'N/A'
-            if v_inv != 'N/A' and v_inv != 'Unknown_Vendor': vendor_inv_set.add(v_inv)
-            if d_inv != 'N/A': dot_inv_set.add(d_inv)
-
-            m_id = str(row.get('qc_person_id', 'Unknown_Machine'))
-            machines_set.add(m_id)
-
-            r_raw = str(row.get('reason_qc_fail', 'No Reason Provided'))
-            reasons_set.add(r_raw)
-
-            fails_history.append({
-                "pid": clean_pid,
-                "period": str(row.get('period', 'Period A')),
-                "QC_created_date": str(row.get('QC_created_date', 'N/A'))[:19],
-                "vendor_invoice_number": v_inv,
-                "dot_invoice": d_inv,
-                "invoice": f"{v_inv} ({d_inv})" if d_inv != 'N/A' else v_inv,
-                "item_type": str(row.get('item_type', 'N/A')),
-                "reason_raw": r_raw,
-                "reason_cluster": str(row.get('reason_cluster', r_raw)),
-                "is_mei_attributable": bool(row.get('reason_cluster') in self.mei_clusters),
-                "qc_person_id": m_id,
-                "shift_bucket": str(row.get('shift_bucket', 'N/A')),
-                "tray_id": str(row.get('tray_id', 'N/A'))
-            })
-
-        # 2. Correction History for PID (all entries, including superseded and user-manual ones)
+        # 1. Correction History first (so we know the latest correction timestamp for Before/After tagging)
         corrections_history = []
         df_log_source = self.df_log_all if hasattr(self, 'df_log_all') and not self.df_log_all.empty else self.df_log
         if not df_log_source.empty:
-            log_pids = df_log_source[df_log_source['pid'] == clean_pid].sort_values('timestamp')
+            if exact_key:
+                mask_log = (df_log_source['pid_invoice'] == exact_key)
+                if search_invoice and 'dot_inv_key' in df_log_source.columns:
+                    mask_log |= ((df_log_source['pid'] == base_pid) & (df_log_source['dot_inv_key'] == search_invoice))
+                log_pids = df_log_source[mask_log].sort_values('timestamp')
+            else:
+                log_pids = df_log_source[df_log_source['pid'] == base_pid].sort_values('timestamp')
+
             for idx, (_, row) in enumerate(log_pids.iterrows()):
                 is_latest = (idx == len(log_pids) - 1)
-
-                # Compute precision shift string
                 b_a, a_a = row.get('A'), row.get('A1')
                 b_b, a_b = row.get('B'), row.get('B1')
                 b_cr, a_cr = row.get('CIRC R'), row.get('CIRC R1')
@@ -1729,7 +2161,7 @@ class MEIAnalyzer:
 
                 corrections_history.append({
                     "id": str(row.get('id', '')),
-                    "pid": clean_pid,
+                    "pid": str(row.get('pid_invoice') or row.get('pid') or base_pid),
                     "timestamp": str(row['timestamp'])[:19],
                     "sheet": str(row.get('sheet', 'Manual Entry')),
                     "is_manual": bool(row.get('is_manual', False)),
@@ -1754,27 +2186,147 @@ class MEIAnalyzer:
                     "notes": str(row.get('notes', ''))
                 })
 
+        latest_corr = corrections_history[-1] if corrections_history else {}
+        latest_corr_ts = str(latest_corr.get('timestamp', ''))[:19] if latest_corr else None
+        latest_corr_date = latest_corr_ts[:10] if latest_corr_ts else None
+        first_corr = corrections_history[0] if corrections_history else {}
+
+        # 2. QC Fail History
+        if exact_key and has_dot:
+            is_match = (df_combined['pid_invoice'] == exact_key)
+            if 'dot_invoice' in df_combined.columns and search_invoice:
+                is_match |= ((df_combined['pid'] == base_pid) & (df_combined['dot_invoice'] == search_invoice))
+            if 'vendor_invoice_number' in df_combined.columns and search_invoice:
+                is_match |= ((df_combined['pid'] == base_pid) & (df_combined['vendor_invoice_number'] == search_invoice))
+            qc_rows = df_combined[is_match & (df_combined['status'] == 'QCFailed')]
+        elif exact_key:
+            qc_rows = df_combined[(df_combined['pid_invoice'] == exact_key) & (df_combined['status'] == 'QCFailed')]
+        else:
+            qc_rows = df_combined[(df_combined['pid'] == base_pid) & (df_combined['status'] == 'QCFailed')]
+
+        from collections import Counter
+        fails_history = []
+        vendor_inv_set = set()
+        dot_inv_set = set()
+        reasons_list = []
+
+        for _, row in qc_rows.iterrows():
+            v_inv = str(row.get('vendor_invoice_number', 'N/A'))
+            d_inv = str(row.get('dot_invoice', 'N/A')) if pd.notna(row.get('dot_invoice')) else 'N/A'
+            if v_inv != 'N/A' and v_inv != 'Unknown_Vendor': vendor_inv_set.add(v_inv)
+            if d_inv != 'N/A': dot_inv_set.add(d_inv)
+
+            r_raw = str(row.get('reason_qc_fail', 'No Reason Provided')).strip()
+            if r_raw: reasons_list.append(r_raw)
+
+            f_date_str = str(row.get('QC_created_date', 'N/A'))[:19]
+            f_date = f_date_str[:10]
+            if latest_corr_date and latest_corr_date != 'N/A':
+                timing = "After" if f_date >= latest_corr_date else "Before"
+            else:
+                timing = "Before"
+
+            allowed_reasons_set = {r.strip().lower() for r in KNOWN_MEI_REASONS}
+            is_mei = (r_raw.lower() in allowed_reasons_set) or bool(row.get('reason_cluster') in getattr(self, 'mei_clusters', set()))
+            inv_display = f"{v_inv} ({d_inv})" if (d_inv and d_inv != 'N/A') else (f"{v_inv} ({search_invoice})" if (search_invoice and v_inv != search_invoice) else v_inv)
+            fails_history.append({
+                "pid": exact_key or base_pid,
+                "period": timing,
+                "timing": timing,
+                "QC_created_date": f_date_str,
+                "vendor_invoice_number": v_inv,
+                "dot_invoice": d_inv,
+                "invoice": inv_display,
+                "item_type": str(row.get('item_type', 'N/A')),
+                "reason_raw": r_raw,
+                "reason_cluster": str(row.get('reason_cluster', r_raw)),
+                "is_mei_attributable": is_mei,
+                "tray_id": str(row.get('tray_id', 'N/A'))
+            })
+
+        # Deduplicate multiple entries of same dotinvoice in same day with same reason
+        seen_fails = set()
+        deduped_fails_history = []
+        for f in fails_history:
+            d_key = str(f.get('dot_invoice') or f.get('vendor_invoice_number') or '').strip()
+            date_key = str(f.get('QC_created_date', ''))[:10]
+            r_key = str(f.get('reason_raw', '')).strip().lower()
+            key_tuple = (d_key, date_key, r_key)
+            if d_key and d_key != 'N/A' and key_tuple in seen_fails:
+                continue
+            seen_fails.add(key_tuple)
+            deduped_fails_history.append(f)
+        fails_history = deduped_fails_history
+
+        # Sort fails newest first
+        fails_history.sort(key=lambda x: str(x.get('QC_created_date', '')), reverse=True)
+
+        fails_before = sum(1 for f in fails_history if f['timing'] == 'Before')
+        fails_after = sum(1 for f in fails_history if f['timing'] == 'After') if corrections_history else None
+        shape_fails_before = sum(1 for f in fails_history if f['timing'] == 'Before' and f.get('is_mei_attributable'))
+        shape_fails_after = sum(1 for f in fails_history if f['timing'] == 'After' and f.get('is_mei_attributable')) if corrections_history else None
+
+        # Primary reason: prioritize MEI shape reasons, fallback to any reason
+        allowed_reasons_set = {r.strip().lower() for r in KNOWN_MEI_REASONS}
+        mei_reasons = [r for r in reasons_list if (r.lower() in allowed_reasons_set or r in getattr(self, 'mei_clusters', set()))]
+        if mei_reasons:
+            rc = Counter(mei_reasons).most_common(1)
+            primary_reason_str = rc[0][0]
+        elif reasons_list:
+            rc = Counter(reasons_list).most_common(1)
+            primary_reason_str = rc[0][0]
+        else:
+            primary_reason_str = "N/A"
+
         # Determine overall classification
         analysis = self.analyze()
-        classification_match = next((p for p in analysis['classified_pids'] if p['pid'] == clean_pid), None)
+        if exact_key:
+            classification_match = next((p for p in analysis['classified_pids'] if p.get('pid_invoice') == exact_key), None)
+        else:
+            classification_match = next((p for p in analysis['classified_pids'] if p.get('pid') == base_pid), None)
 
-        latest_fail = fails_history[-1] if fails_history else {}
-        latest_corr = corrections_history[-1] if corrections_history else {}
+        if classification_match:
+            final_class = classification_match['classification']
+            if final_class == 'Corrected' and shape_fails_after and shape_fails_after > 0:
+                final_class = 'Recurred'
+        elif corrections_history:
+            final_class = "Recurred" if (shape_fails_after and shape_fails_after > 0) else "Corrected"
+        else:
+            final_class = "No Fail" if not fails_history else "Pending"
+
+        latest_fail = fails_history[0] if fails_history else {}
+
+        if exact_key and search_invoice:
+            primary_inv = search_invoice
+        elif dot_inv_set:
+            primary_inv = ", ".join(dot_inv_set)
+        elif vendor_inv_set:
+            primary_inv = ", ".join(vendor_inv_set)
+        else:
+            primary_inv = "N/A"
+
+        latest_tech_val = next((c['done_by'] for c in reversed(corrections_history) if c.get('done_by') and str(c['done_by']).strip() not in ('', 'nan', 'None', 'N/A')), 'N/A')
 
         return {
-            "pid": clean_pid,
-            "classification": classification_match['classification'] if classification_match else "No W1 Fail",
+            "pid": exact_key if exact_key else base_pid,
+            "base_pid": base_pid,
+            "pid_invoice": exact_key or (f"{base_pid}.{search_invoice}" if search_invoice else base_pid),
+            "classification": final_class,
             "fails_count": len(fails_history),
+            "fails_before": fails_before,
+            "fails_after": fails_after,
+            "shape_fails_before": shape_fails_before,
+            "shape_fails_after": shape_fails_after,
             "corrections_count": len(corrections_history),
             "vendor_invoice": ", ".join(vendor_inv_set) if vendor_inv_set else "N/A",
             "dot_invoice": ", ".join(dot_inv_set) if dot_inv_set else "N/A",
-            "primary_invoice": ", ".join(vendor_inv_set.union(dot_inv_set)) if (vendor_inv_set or dot_inv_set) else "N/A",
-            "primary_machine": ", ".join(machines_set) if machines_set else "N/A",
-            "primary_reason": latest_fail.get('reason_raw', 'N/A'),
-            "primary_reason_cluster": latest_fail.get('reason_cluster', 'N/A'),
+            "primary_invoice": primary_inv,
+            "primary_reason": primary_reason_str,
+            "primary_reason_cluster": latest_fail.get('reason_cluster', primary_reason_str),
             "latest_fail_date": latest_fail.get('QC_created_date', 'N/A'),
+            "first_correction_date": first_corr.get('timestamp', 'N/A'),
             "latest_correction_date": latest_corr.get('timestamp', 'N/A'),
-            "latest_tech": latest_corr.get('done_by', 'N/A'),
+            "latest_tech": latest_tech_val,
             "fails_history": fails_history,
             "corrections_history": corrections_history
         }
@@ -1795,9 +2347,9 @@ class MEIAnalyzer:
             q = str(search).lower().strip()
             mask = (
                 df_c['pid'].str.lower().str.contains(q, na=False) |
+                (df_c['pid_invoice'].str.lower().str.contains(q, na=False) if 'pid_invoice' in df_c.columns else False) |
                 df_c['reason_cluster'].str.lower().str.contains(q, na=False) |
                 df_c['raw_reason'].str.lower().str.contains(q, na=False) |
-                df_c['qc_person_id'].str.lower().str.contains(q, na=False) |
                 df_c['vendor_invoice_number'].str.lower().str.contains(q, na=False) |
                 df_c['done_by'].str.lower().str.contains(q, na=False)
             )

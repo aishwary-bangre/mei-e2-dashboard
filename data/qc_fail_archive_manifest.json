@@ -27,6 +27,85 @@
     "first_date": "2026-10-09",
     "last_date": "2026-10-17",
     "ingested_at": "2026-10-17 22:07:55",
-    "last_seen_at": "2026-10-17 22:08:07"
+    "last_seen_at": "2026-10-17 22:22:46"
+  },
+  {
+    "source_label": "QC Raw Data (3).xlsx",
+    "loaded_as": "QC Data",
+    "rows_in_file": 5868,
+    "rows_added": 409,
+    "first_date": "2026-10-09",
+    "last_date": "2026-10-17",
+    "ingested_at": "2026-10-17 22:42:15",
+    "last_seen_at": "2026-10-17 23:37:44"
+  },
+  {
+    "source_label": "QC Raw Data (3).xlsx",
+    "loaded_as": "QC Data",
+    "rows_in_file": 4183,
+    "rows_added": 0,
+    "first_date": "2026-10-09",
+    "last_date": "2026-10-17",
+    "ingested_at": "2026-10-17 23:41:50",
+    "last_seen_at": "2026-10-18 23:37:09"
+  },
+  {
+    "source_label": "QC Raw Data (3).xlsx",
+    "loaded_as": "QC Data",
+    "rows_in_file": 2563,
+    "rows_added": 0,
+    "first_date": "2026-10-09",
+    "last_date": "2026-10-17",
+    "ingested_at": "2026-10-18 23:39:09",
+    "last_seen_at": "2026-10-19 00:10:27"
+  },
+  {
+    "source_label": "QC Raw Data (3).xlsx",
+    "loaded_as": "QC Data",
+    "rows_in_file": 2561,
+    "rows_added": 0,
+    "first_date": "2026-10-09",
+    "last_date": "2026-10-17",
+    "ingested_at": "2026-10-19 00:40:38",
+    "last_seen_at": "2026-10-21 18:18:42"
+  },
+  {
+    "source_label": "QC Raw Data (3).xlsx",
+    "loaded_as": "QC Data",
+    "rows_in_file": 4090,
+    "rows_added": 1402,
+    "first_date": "2026-10-09",
+    "last_date": "2026-10-17",
+    "ingested_at": "2026-10-21 21:01:37",
+    "last_seen_at": "2026-10-29 19:30:04"
+  },
+  {
+    "source_label": "test_mock_qc.xlsx",
+    "loaded_as": "QC Data",
+    "rows_in_file": 1,
+    "rows_added": 1,
+    "first_date": "2026-10-18",
+    "last_date": "2026-10-18",
+    "ingested_at": "2026-10-29 18:53:06"
+  },
+  {
+    "source_label": "QC Raw Datalat.xlsx",
+    "loaded_as": "QC Data",
+    "rows_in_file": 284,
+    "rows_added": 284,
+    "first_date": "2026-10-25",
+    "last_date": "2026-10-28",
+    "ingested_at": "2026-10-29 19:30:06",
+    "last_seen_at": "2026-10-29 19:48:00"
+  },
+  {
+    "source_label": "QC Raw Datalat.xlsx",
+    "loaded_as": "QC Data",
+    "rows_in_file": 323,
+    "rows_added": 45,
+    "first_date": "2026-10-25",
+    "last_date": "2026-10-28",
+    "ingested_at": "2026-10-29 19:54:26",
+    "last_seen_at": "2026-10-30 17:11:33"
   }
 ]

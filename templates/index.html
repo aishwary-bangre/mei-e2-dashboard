@@ -8,8 +8,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles_shape.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20261027_v2">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles_shape.css') }}?v=20261027_v2">
     <link href="https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/css/tom-select.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/js/tom-select.complete.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -618,13 +618,19 @@
             <section class="sc-control-strip glass-card" id="sc-control-strip">
                 <!-- Row 1: QC Data Status + Import + Date filter -->
                 <div class="sc-ctrl-row sc-ctrl-row-top">
-                    <!-- QC Data Status (replaces old Period A/B dropzones) -->
-                    <div class="sc-qc-status-card" id="sc-qc-status-card">
-                        <span class="sc-qc-icon">📊</span>
-                        <div class="sc-qc-text">
-                            <span class="sc-qc-label">QC Data Source</span>
-                            <span class="sc-qc-value" id="lbl-qc-source">Loading...</span>
+                    <!-- QC Data Source & Upload Button -->
+                    <div class="sc-import-zone">
+                        <button class="btn btn-cyan-outline" id="btn-upload-qc" type="button" title="Upload new QC Raw Data Excel file (.xlsx)">
+                            📤 Upload QC File (.xlsx)
+                        </button>
+                        <div class="sc-qc-status-card cursor-pointer" id="sc-qc-status-card" title="Click or drag file here to upload new QC Excel file">
+                            <span class="sc-qc-icon">📊</span>
+                            <div class="sc-qc-text">
+                                <span class="sc-qc-label">QC DATA SOURCE</span>
+                                <span class="sc-qc-value" id="lbl-qc-source">Loading...</span>
+                            </div>
                         </div>
+                        <input type="file" id="input-upload-qc" accept=".xlsx,.xls" hidden />
                     </div>
 
                     <div class="sc-ctrl-divider"></div>
@@ -859,11 +865,19 @@
                 <div class="glass-card chart-container span-all">
                     <div class="chart-header">
                         <h3 id="action-table-title">PIDs Needing Action</h3>
-                        <p class="chart-sub" id="action-table-sub">Recurred and Pending PIDs, worst first (by Period B failures). Click a PID for its full history.</p>
+                        <p class="chart-sub" id="action-table-sub">Recurred and Pending PIDs, worst first (by Fails After). Click a PID for its full history.</p>
                     </div>
                     <div class="table-scroll">
-                        <table>
-                            <thead><tr><th>PID</th><th>Status</th><th>Fails A</th><th>Fails B</th><th>Main issue</th><th>Last correction</th><th>Person Involved</th></tr></thead>
+                        <table id="action-needed-table">
+                            <thead><tr>
+                                <th class="sortable" data-sort="pid">PID.Invoice <span class="sort-icon">↕</span></th>
+                                <th class="sortable" data-sort="status">Status <span class="sort-icon">↕</span></th>
+                                <th class="sortable" data-sort="fails_before">Fails Before <span class="sort-icon">↕</span></th>
+                                <th class="sortable" data-sort="fails_after">Fails After <span class="sort-icon">↕</span></th>
+                                <th class="sortable" data-sort="issue">Main issue <span class="sort-icon">↕</span></th>
+                                <th class="sortable" data-sort="correction">Last correction <span class="sort-icon">↕</span></th>
+                                <th class="sortable" data-sort="person">Person Involved <span class="sort-icon">↕</span></th>
+                            </tr></thead>
                             <tbody id="action-table-body"></tbody>
                         </table>
                     </div>
@@ -878,80 +892,43 @@
         <!-- VIEW 2: AUDIT / DATA EXPLORER                        -->
         <!-- ==================================================== -->
         <div id="impact-view" class="view-section hidden">
-            <div id="impact-warnings" class="master-warnings hidden"></div>
-            <div class="impact-toolbar">
-                <span class="chart-sub">Correction effectiveness analysis. Use the logging strip above the dashboard to log new corrections.</span>
-            </div>
-            <div class="master-summary-grid" id="impact-cards"></div>
-
-            <div class="glass-card impact-block">
-                <h3>Findings</h3>
-                <ul id="impact-findings" class="impact-findings"></ul>
-            </div>
-
-            <div class="glass-card impact-block">
-                <h3>Failure rate: before correction vs after</h3>
-                <p class="chart-sub">Before = the numbers written on the correction sheet when the PID.Invoice was flagged. After = QC data for the same PID.Invoice on lenses cut after the correction date.</p>
-                <div class="table-scroll"><table><thead><tr><th></th><th>Failed</th><th>QC'd</th><th>Fail rate</th></tr></thead><tbody id="impact-pooled"></tbody></table></div>
-            </div>
-
-            <div class="glass-card impact-block">
-                <h3>Dates and thresholds</h3>
-                <p class="chart-sub">The correction sheets have no date column, so each sheet's name is its date window and the window end is the correction date. Change a date if it is wrong; every number recalculates (about 20-30 s).</p>
-                <div class="table-scroll"><table><thead><tr><th>Sheet</th><th>From</th><th>To (correction date)</th></tr></thead><tbody id="impact-windows"></tbody></table></div>
-                <div class="impact-settings-row">
-                    <label>Min lenses QC'd after correction to judge it <input type="number" id="impact-min-volume" min="1" class="select-input impact-num" /></label>
-                    <label>Needs-correction threshold (fails) <input type="number" id="impact-threshold" min="1" class="select-input impact-num" /></label>
-                    <button class="btn btn-primary" id="btn-impact-save">Save &amp; recalculate</button>
-                    <span id="impact-save-msg" class="text-muted"></span>
+            <div class="glass-card impact-card-main">
+                <div class="impact-header-row">
+                    <div class="impact-title-group">
+                        <h3 class="impact-title">Corrections: what was changed and what happened</h3>
+                        <span id="impact-count" class="impact-count-badge">Loading...</span>
+                    </div>
+                    <div class="impact-controls-group">
+                        <div class="impact-search-wrapper">
+                            <span class="impact-search-icon">🔍</span>
+                            <input type="text" id="impact-search" class="search-input impact-search-input" placeholder="Search PID.Invoice, issue..." />
+                        </div>
+                        <select id="impact-status" class="select-input impact-status-select">
+                            <option value="all">All statuses</option>
+                            <option value="Fixed">Fixed (0 fails post-CT)</option>
+                            <option value="Still Failing">Still Failing (failed post-CT)</option>
+                            <option value="No QC Data">No QC Data</option>
+                        </select>
+                    </div>
                 </div>
-                <div id="impact-coverage" class="chart-sub"></div>
-            </div>
-
-            <div class="glass-card impact-block">
-                <h3>Check a PID.Invoice</h3>
-                <p class="chart-sub">Replaces the VLOOKUPs: type a PID.Invoice (e.g. 241115.IRJ127B2C0001480) or just a PID to see its QC failures, corrections and list status.</p>
-                <div class="table-controls-row">
-                    <input type="text" id="impact-check-input" class="search-input" placeholder="PID.Invoice or PID" />
-                    <button class="btn btn-secondary" id="btn-impact-check">Check</button>
-                </div>
-                <div id="impact-check-result"></div>
-            </div>
-
-            <div class="glass-card impact-block">
-                <h3>Corrections: what was changed and what happened</h3>
-                <div class="table-controls-row">
-                    <input type="text" id="impact-search" class="search-input" placeholder="Search PID.Invoice, person, issue..." />
-                    <select id="impact-status" class="select-input">
-                        <option value="all">All statuses</option><option>Fixed</option><option>Improved</option><option>Still failing</option><option>Not tested yet</option><option>No correction done</option>
-                    </select>
-                    <span id="impact-count" class="text-muted"></span>
-                </div>
-                <div class="table-scroll">
+                <div class="impact-table-scroll">
                     <table class="impact-table">
-                        <thead><tr><th>PID.Invoice</th><th>Sheet</th><th>Issue</th><th>Person</th><th>Dev %</th><th>A</th><th>B</th><th>CIRC R</th><th>CIRC L</th><th>Before</th><th>After A</th><th>After B</th><th>Status</th></tr></thead>
+                        <thead>
+                            <tr>
+                                <th class="sortable" data-sort="pid" style="width: 16%;">PID.Invoice <span class="sort-icon">↕</span></th>
+                                <th class="sortable" data-sort="ct" style="width: 11%;">CT Date <span class="sort-icon">↕</span></th>
+                                <th class="sortable" data-sort="issue" style="width: 9%;">Issue <span class="sort-icon">↕</span></th>
+                                <th style="width: 13%;">A</th>
+                                <th style="width: 13%;">B</th>
+                                <th style="width: 13%;">CIRC R</th>
+                                <th style="width: 13%;">CIRC L</th>
+                                <th class="sortable" data-sort="outcome" id="th-impact-outcome" style="width: 12%; text-align: center;">QC Outcome <span class="sort-icon" id="sort-icon-impact-outcome">↕</span></th>
+                            </tr>
+                        </thead>
                         <tbody id="impact-tbody"></tbody>
                     </table>
                 </div>
             </div>
-
-            <div class="glass-card impact-block">
-                <h3>Still needs a correction</h3>
-                <p class="chart-sub" id="impact-pending-sub"></p>
-                <div class="table-scroll"><table><thead><tr><th>PID.Invoice</th><th>Fails A</th><th>Fails B</th><th>Fail rate</th><th>On your lists</th></tr></thead><tbody id="impact-pending"></tbody></table></div>
-            </div>
-
-            <div class="glass-card impact-block">
-                <h3>How much was changed</h3>
-                <p class="chart-sub">Average shift in the lens dimension (mm) from before to after the correction, and results by issue and person.</p>
-                <div class="table-scroll"><table><thead><tr><th>Dimension</th><th>Corrections</th><th>Average shift</th><th>Average absolute shift</th></tr></thead><tbody id="impact-dims"></tbody></table></div>
-                <div class="table-scroll"><table><thead><tr><th>By</th><th>Corrections</th><th>Fixed</th><th>Improved</th><th>Still failing</th><th>Avg deviation %</th></tr></thead><tbody id="impact-groups"></tbody></table></div>
-            </div>
-
-            <details class="glass-card master-sources">
-                <summary>Workbook cross-checks (your VLOOKUPs) <span id="impact-lists-count"></span></summary>
-                <div class="table-scroll"><table><thead><tr><th>List sheet</th><th>PID.Invoices</th><th>Marked DONE</th><th>Pending</th><th>Other</th><th>Corrected earlier, failing again</th><th>Repeat from earlier lists</th></tr></thead><tbody id="impact-lists"></tbody></table></div>
-            </details>
         </div>
 
         <div id="explorer-view" class="view-section hidden">
@@ -966,9 +943,6 @@
                 </button>
                 <button class="subtab-btn" id="subtab-classifications">
                     <span>📊 Classification Table</span>
-                </button>
-                <button class="subtab-btn" id="subtab-clusters">
-                    <span>🧬 RapidFuzz Clusters</span>
                 </button>
                 <button class="subtab-btn" id="subtab-fails">
                     <span>📁 Raw QC Fails</span>
@@ -992,7 +966,7 @@
 
                 <div class="glass-card table-control-card">
                     <div class="table-controls-row master-controls">
-                        <input type="text" id="exp-master-search" placeholder="Search PID, PID.Invoice, machine, person, reason, source..." class="search-input" />
+                        <input type="text" id="exp-master-search" placeholder="Search PID.Invoice, person, reason, source..." class="search-input" />
                         <select id="exp-master-type" class="select-input">
                             <option value="all">All records</option>
                             <option value="fail">QC fails only</option>
@@ -1039,13 +1013,13 @@
                 <div class="glass-card search-card">
                     <div class="search-bar-row">
                         <select id="exp-search-type" class="form-input" style="width:auto; margin-right:8px; height:100%;">
-                            <option value="pid">PID</option>
+                            <option value="pid">PID.Invoice</option>
                             <option value="invoice">Invoice</option>
                         </select>
                         <input type="text" id="exp-pid-input" placeholder="Enter value..." class="search-input-lg" />
                         <button id="exp-pid-btn" class="btn btn-primary">Search</button>
                     </div>
-                    <p class="search-hint">Shows: PID → Invoice → QC failures → machine → issue → correction history → before/after dimensions → recurrence</p>
+                    <p class="search-hint">Shows: PID.Invoice → QC failures → issue → correction history → before/after dimensions → recurrence</p>
                 </div>
 
                 <div class="pid-container-wrapper hidden" id="pid-history-container">
@@ -1062,12 +1036,16 @@
                                     <span class="meta-value" id="pid-summary-invoice">N/A</span>
                                 </div>
                                 <div class="pid-meta-item">
-                                    <span class="meta-label">Primary Machine</span>
-                                    <span class="meta-value" id="pid-summary-machine">N/A</span>
-                                </div>
-                                <div class="pid-meta-item">
                                     <span class="meta-label">Total QC Fails</span>
                                     <span class="meta-value text-red" id="pid-fails-count">0</span>
+                                </div>
+                                <div class="pid-meta-item">
+                                    <span class="meta-label">Fails Before</span>
+                                    <span class="meta-value" style="color: #38bdf8;" id="pid-fails-before">-</span>
+                                </div>
+                                <div class="pid-meta-item">
+                                    <span class="meta-label">Fails After</span>
+                                    <span class="meta-value text-red" id="pid-fails-after">-</span>
                                 </div>
                                 <div class="pid-meta-item">
                                     <span class="meta-label">Corrections</span>
@@ -1101,12 +1079,10 @@
                                 <table>
                                     <thead>
                                         <tr>
-                                            <th>Period</th>
+                                            <th>Timing</th>
                                             <th>Fail Date</th>
                                             <th>Invoice</th>
-                                            <th>Machine</th>
                                             <th>Reason</th>
-                                            <th>Shift</th>
                                         </tr>
                                     </thead>
                                     <tbody id="pid-fails-tbody">
@@ -1164,10 +1140,9 @@
                         <table id="exp-class-table">
                             <thead>
                                 <tr>
-                                    <th class="sortable" data-sort="pid">PID <span class="sort-icon">↕</span></th>
+                                    <th class="sortable" data-sort="pid_invoice">PID.Invoice <span class="sort-icon">↕</span></th>
                                     <th class="sortable" data-sort="classification">Status <span class="sort-icon">↕</span></th>
                                     <th class="sortable" data-sort="reason_cluster">Reason <span class="sort-icon">↕</span></th>
-                                    <th class="sortable" data-sort="qc_person_id">QC Person / Employee <span class="sort-icon">↕</span></th>
                                     <th>Events</th>
                                     <th class="sortable" data-sort="first_fail_timestamp">First Fail <span class="sort-icon">↕</span></th>
                                     <th>Detail</th>
@@ -1188,26 +1163,16 @@
                 </div>
             </div>
 
-            <!-- Sub-View 3: RapidFuzz Cluster Inspector -->
-            <div id="exp-panel-clusters" class="explorer-panel hidden">
-                <div class="glass-card table-control-card">
-                    <div class="clusters-header">
-                        <h3>Fuzzy Cluster Groups (RapidFuzz 85%)</h3>
-                    </div>
-                    <div id="clusters-accordion-container" class="accordion-list">
-                    </div>
-                </div>
-            </div>
 
             <!-- Sub-View 4: Raw QC Fails Table -->
             <div id="exp-panel-fails" class="explorer-panel hidden">
                 <div class="glass-card table-control-card">
                     <div class="table-controls-row">
-                        <input type="text" id="exp-fails-search" placeholder="Search PID, machine, reason..." class="search-input" />
-                        <select id="exp-fails-period-filter" class="select-input">
-                            <option value="all">All Periods</option>
-                            <option value="period_a">Period A</option>
-                            <option value="period_b">Period B</option>
+                        <input type="text" id="exp-fails-search" placeholder="Search PID.Invoice, reason..." class="search-input" />
+                        <select id="exp-fails-period-filter" class="select-input" style="min-width: 140px;">
+                            <option value="all" selected>All Defect Types</option>
+                            <option value="mei">MEI Shape Only</option>
+                            <option value="other">Other Defects Only</option>
                         </select>
                         <select id="exp-fails-limit" class="select-input">
                             <option value="50" selected>50</option>
@@ -1218,11 +1183,10 @@
                         <table>
                             <thead>
                                 <tr>
-                                    <th class="sortable" data-sort="pid">PID <span class="sort-icon">↕</span></th>
-                                    <th class="sortable" data-sort="period">Period <span class="sort-icon">↕</span></th>
+                                    <th class="sortable" data-sort="pid_invoice">PID.Invoice <span class="sort-icon">↕</span></th>
+                                    <th class="sortable" data-sort="period">Source <span class="sort-icon">↕</span></th>
                                     <th class="sortable" data-sort="QC_created_date">Date <span class="sort-icon">↕</span></th>
                                     <th>Reason</th>
-                                    <th class="sortable" data-sort="qc_person_id">QC Person / Employee <span class="sort-icon">↕</span></th>
                                     <th>Vendor</th>
                                 </tr>
                             </thead>
@@ -1255,10 +1219,9 @@
                 <table>
                     <thead>
                         <tr>
-                            <th>PID</th>
+                            <th>PID.Invoice</th>
                             <th>Classification</th>
                             <th>Reason</th>
-                            <th>Machine</th>
                             <th>Events</th>
                         </tr>
                     </thead>
@@ -1323,8 +1286,8 @@
         </div>
     </div>
 
-    <script src="{{ url_for('static', filename='app.js') }}"></script>
-    <script src="{{ url_for('static', filename='shape_correction.js') }}"></script>
+    <script src="{{ url_for('static', filename='app.js') }}?v=20261027_v2"></script>
+    <script src="{{ url_for('static', filename='shape_correction.js') }}?v=20261027_v2"></script>
 </body>
 
 </html>

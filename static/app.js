@@ -1129,7 +1129,7 @@ function renderTable(records) {
             <td>${r.entry_date} ${r.entry_time}</td>
             <td><strong>${r.shift}</strong></td>
             <td>${r.operator}</td>
-            <td><strong style="color: var(--cyan-accent);">${r.tray_id}</strong></td>
+            <td><strong style="color: var(--cyan-accent);">${r.tray_id || '--'}</strong></td>
             <td>${r.fitting_id || '--'}</td>
             <td>${jitBadge}</td>
             <td><strong style="color: var(--amber-accent);">${r.processing_type || '--'}</strong></td>

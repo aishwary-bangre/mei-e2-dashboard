@@ -20,6 +20,8 @@ function initShapeCorrectionTab() {
         setupControlStrip();
         setupLoggingStrip();
         setupShapeHeaderControls();
+        setupImpactTableSorting();
+        setupActionTableSorting();
 
         const btnClose = document.getElementById('btn-close-modal');
         if (btnClose) {
@@ -125,6 +127,41 @@ window.populateShapeHeaderDropdowns = populateShapeHeaderDropdowns;
 // CONTROL STRIP SETUP
 // =====================
 function setupControlStrip() {
+    // QC Raw Data Upload (Button + Status Card Click/Drop)
+    const qcUploadBtn = document.getElementById('btn-upload-qc');
+    const qcUploadInput = document.getElementById('input-upload-qc');
+    const qcStatusCard = document.getElementById('sc-qc-status-card');
+
+    if (qcUploadBtn && qcUploadInput) {
+        qcUploadBtn.addEventListener('click', () => qcUploadInput.click());
+    }
+    if (qcStatusCard && qcUploadInput) {
+        qcStatusCard.addEventListener('click', (e) => {
+            if (e.target !== qcUploadInput) {
+                qcUploadInput.click();
+            }
+        });
+        qcStatusCard.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            qcStatusCard.classList.add('dragover');
+        });
+        qcStatusCard.addEventListener('dragleave', () => qcStatusCard.classList.remove('dragover'));
+        qcStatusCard.addEventListener('drop', (e) => {
+            e.preventDefault();
+            qcStatusCard.classList.remove('dragover');
+            if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+                uploadQcRawData(e.dataTransfer.files[0]);
+            }
+        });
+    }
+    if (qcUploadInput) {
+        qcUploadInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                uploadQcRawData(e.target.files[0]);
+            }
+        });
+    }
+
     // Import Correction Sheet
     const importBtn = document.getElementById('btn-import-corrections');
     const importInput = document.getElementById('input-import-corrections');
@@ -136,30 +173,65 @@ function setupControlStrip() {
         });
     }
 
-    // Date filter
+    // Date filter (Control Strip & Impact View synchronized)
     const applyBtn = document.getElementById('btn-sc-date-apply');
     const clearBtn = document.getElementById('btn-sc-date-clear');
-    if (applyBtn) applyBtn.addEventListener('click', () => {
-        scDateFrom = document.getElementById('sc-date-from').value;
-        scDateTo   = document.getElementById('sc-date-to').value;
+    const impactApplyBtn = document.getElementById('btn-impact-date-apply');
+    const impactClearBtn = document.getElementById('btn-impact-date-clear');
+    const elScFrom = document.getElementById('sc-date-from');
+    const elScTo = document.getElementById('sc-date-to');
+    const elImpFrom = document.getElementById('impact-date-from');
+    const elImpTo = document.getElementById('impact-date-to');
+
+    const syncDatesAndFetch = (fromVal, toVal) => {
+        scDateFrom = fromVal || '';
+        scDateTo = toVal || '';
+        if (elScFrom) elScFrom.value = scDateFrom;
+        if (elScTo) elScTo.value = scDateTo;
+        if (elImpFrom) elImpFrom.value = scDateFrom;
+        if (elImpTo) elImpTo.value = scDateTo;
         fetchMetrics();
-    });
-    if (clearBtn) clearBtn.addEventListener('click', () => {
-        document.getElementById('sc-date-from').value = '';
-        document.getElementById('sc-date-to').value = '';
-        scDateFrom = ''; scDateTo = '';
-        fetchMetrics();
-    });
+        fetchImpact();
+    };
+
+    const onScDateChanged = () => {
+        const f = elScFrom ? elScFrom.value : '';
+        const t = elScTo ? elScTo.value : '';
+        syncDatesAndFetch(f, t);
+    };
+    if (elScFrom) elScFrom.addEventListener('change', onScDateChanged);
+    if (elScTo) elScTo.addEventListener('change', onScDateChanged);
+
+    if (applyBtn) {
+        applyBtn.addEventListener('click', onScDateChanged);
+    }
+    if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+            syncDatesAndFetch('', '');
+        });
+    }
+    if (impactApplyBtn) {
+        impactApplyBtn.addEventListener('click', () => {
+            const f = document.getElementById('impact-date-from')?.value || '';
+            const t = document.getElementById('impact-date-to')?.value || '';
+            syncDatesAndFetch(f, t);
+        });
+    }
+    if (impactClearBtn) {
+        impactClearBtn.addEventListener('click', () => {
+            syncDatesAndFetch('', '');
+        });
+    }
 
     // Corrections log export
     const expLog = document.getElementById('btn-sc-export-corrections-log');
     if (expLog) expLog.addEventListener('click', () => {
         const from = document.getElementById('sc-date-from').value;
-        const to   = document.getElementById('sc-date-to').value;
+        const to = document.getElementById('sc-date-to').value;
         let url = '/api/shape/export/corrections_log';
         const params = [];
         if (from) params.push(`date_from=${from}`);
-        if (to)   params.push(`date_to=${to}`);
+        if (to) params.push(`date_to=${to}`);
         if (params.length) url += '?' + params.join('&');
         window.location = url;
     });
@@ -221,6 +293,49 @@ function setupLoggingStrip() {
     if (submitBtn) submitBtn.addEventListener('click', saveInlineCorrection);
 }
 
+async function uploadQcRawData(file) {
+    if (!file) return;
+    const btn = document.getElementById('btn-upload-qc');
+    const origText = btn ? btn.innerHTML : '📤 Upload QC File (.xlsx)';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '⏳ Uploading QC File...';
+    }
+    showScLoading(`Uploading ${file.name}: Parsing QC Excel data & calculating failure metrics...`);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const res = await fetch('/api/shape/upload_qc', {
+            method: 'POST',
+            body: formData
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+            throw new Error(data.error || data.detail || 'Upload failed');
+        }
+
+        showScLoading(`Loaded ${data.filename} (${Number(data.rows || 0).toLocaleString()} rows). Refreshing dashboard...`);
+        await checkStatus();
+        if (typeof fetchImpact === 'function') {
+            await fetchImpact();
+        }
+        alert(`✓ QC Excel file uploaded successfully!\nFile: ${data.filename}\nRows: ${Number(data.rows || 0).toLocaleString()}`);
+    } catch (e) {
+        console.error('QC Upload Error:', e);
+        alert(`❌ Failed to upload QC file: ${e.message}`);
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = origText;
+        }
+        const input = document.getElementById('input-upload-qc');
+        if (input) input.value = '';
+        hideScLoading();
+    }
+}
+
 async function uploadImportCorrections(file, statusEl) {
     const importBtn = document.getElementById('btn-import-corrections');
     const origText = importBtn ? importBtn.innerHTML : '📥 Import Correction Sheet';
@@ -257,10 +372,10 @@ async function saveInlineCorrection() {
         ? (document.getElementById('sc-log-issue-custom').value.trim() || 'Other')
         : document.getElementById('sc-log-issue').value;
 
-    const shift    = (document.getElementById('scHeaderShift') || {}).value || 'Shift A';
-    const shiftIc  = (document.getElementById('scHeaderShiftIc') || {}).value || '';
+    const shift = (document.getElementById('scHeaderShift') || {}).value || 'Shift A';
+    const shiftIc = (document.getElementById('scHeaderShiftIc') || {}).value || '';
     const operator = (document.getElementById('scHeaderOperator') || {}).value || '';
-    const ts       = document.getElementById('sc-log-timestamp').value;
+    const ts = document.getElementById('sc-log-timestamp').value;
 
     const floatOrNull = (id) => {
         const v = document.getElementById(id).value;
@@ -277,7 +392,7 @@ async function saveInlineCorrection() {
         done_by: operator,
         timestamp: ts ? ts.replace('T', ' ') + ':00' : null,
         percentage_dev: floatOrNull('sc-dim-dev'),
-        a:  floatOrNull('sc-dim-a'),  b:  floatOrNull('sc-dim-b'),
+        a: floatOrNull('sc-dim-a'), b: floatOrNull('sc-dim-b'),
         circ_r: floatOrNull('sc-dim-cr'), circ_l: floatOrNull('sc-dim-cl'),
         a1: floatOrNull('sc-dim-a1'), b1: floatOrNull('sc-dim-b1'),
         circ_r1: floatOrNull('sc-dim-cr1'), circ_l1: floatOrNull('sc-dim-cl1'),
@@ -368,18 +483,21 @@ async function checkStatus() {
 }
 
 function updateLabels(data) {
-    if (data.week_past_label) {
-        const elPast = document.getElementById('lbl-past-period');
-        if (elPast) elPast.innerText = data.week_past_label;
-        const elStatA = document.getElementById('lbl-period-a-status');
-        if (elStatA) elStatA.innerText = `Loaded: ${data.week_past_label}`;
-    }
-    if (data.week_this_label) {
-        const elThis = document.getElementById('lbl-this-period');
-        if (elThis) elThis.innerText = data.week_this_label;
-        const elStatB = document.getElementById('lbl-period-b-status');
-        if (elStatB) elStatB.innerText = `Loaded: ${data.week_this_label}`;
-    }
+    const qcLabel = data.qc_label || data.week_past_label || 'QC Raw Data (3)';
+    const rowsCount = data.qc_rows ? ` (${Number(data.qc_rows).toLocaleString()} rows)` : '';
+    const fullQcText = `${qcLabel}${rowsCount}`;
+
+    const elQcSource = document.getElementById('lbl-qc-source');
+    if (elQcSource) elQcSource.innerText = fullQcText;
+
+    const elPast = document.getElementById('lbl-past-period');
+    if (elPast) elPast.innerText = fullQcText;
+
+    const elStatA = document.getElementById('lbl-period-a-status');
+    if (elStatA) elStatA.innerText = `Loaded: ${fullQcText}`;
+
+    const elThis = document.getElementById('lbl-this-period');
+    if (elThis && data.week_this_label) elThis.innerText = data.week_this_label;
 
     // Update Correction Sheet indicator
     if (data.correction_sheet) {
@@ -416,8 +534,10 @@ function updateLabels(data) {
 }
 
 function setupDropzones() {
-    setupZone('dropzone-period-a', 'input-period-a', '/api/upload/period_a', 'lbl-period-a-status');
-    setupZone('dropzone-period-b', 'input-period-b', '/api/upload/period_b', 'lbl-period-b-status');
+    const zoneA = document.getElementById('dropzone-period-a');
+    const zoneB = document.getElementById('dropzone-period-b');
+    if (zoneA) setupZone('dropzone-period-a', 'input-period-a', '/api/upload/period_a', 'lbl-period-a-status');
+    if (zoneB) setupZone('dropzone-period-b', 'input-period-b', '/api/upload/period_b', 'lbl-period-b-status');
 }
 
 function setupZone(zoneId, inputId, apiUrl, labelId) {
@@ -457,7 +577,7 @@ async function uploadFile(file, apiUrl, labelEl) {
                 const errJson = await res.json();
                 if (errJson.detail) errorMsg = errJson.detail;
                 else if (errJson.error) errorMsg = errJson.error;
-            } catch (_) {}
+            } catch (_) { }
             throw new Error(errorMsg);
         }
         const data = await res.json();
@@ -484,7 +604,7 @@ async function fetchMetricsCore() {
     try {
         const params = new URLSearchParams();
         if (scDateFrom) params.set('date_from', scDateFrom);
-        if (scDateTo)   params.set('date_to', scDateTo);
+        if (scDateTo) params.set('date_to', scDateTo);
         const url = '/api/metrics' + (params.toString() ? '?' + params.toString() : '');
         const res = await fetch(url);
         if (!res.ok) throw new Error("Error fetching metrics");
@@ -749,7 +869,7 @@ function renderCorrectionEffectiveness(eff, summary) {
         el.removeAllListeners('plotly_click');
     }
     if (el.on) {
-        el.on('plotly_click', function(data) {
+        el.on('plotly_click', function (data) {
             if (!data || !data.points || !data.points.length) return;
             const clickedLabel = data.points[0].label; // 'Pending', 'Recurred', 'Unlogged', 'Corrected'
             filterActionListByClassification(clickedLabel);
@@ -761,19 +881,151 @@ function renderCorrectionEffectiveness(eff, summary) {
 // PIDS NEEDING ACTION: TABLE RENDERING & DONUT SLICE FILTERING
 // -----------------------------------------------------------------------------
 let currentActionFilter = null;
+let currentActionItems = [];
+let actionSortState = { col: null, dir: 'desc' };
 
 function renderActionList(list) {
+    currentActionItems = list || [];
+    renderActionTableBody();
+}
+
+function renderActionTableBody() {
     const tbody = document.getElementById('action-table-body');
     if (!tbody) return;
-    tbody.innerHTML = (list || []).map(c => `
+
+    let items = [...currentActionItems];
+
+    if (actionSortState.col) {
+        const dir = actionSortState.dir;
+        items.sort((a, b) => {
+            if (actionSortState.col === 'fails_before') {
+                const fa = (a.fails_before !== undefined && a.fails_before !== null) ? Number(a.fails_before) : (Number(a.fail_event_count) || 0);
+                const fb = (b.fails_before !== undefined && b.fails_before !== null) ? Number(b.fails_before) : (Number(b.fail_event_count) || 0);
+                if (fa !== fb) return dir === 'desc' ? fb - fa : fa - fb;
+                const sfa = Number(a.shape_fails_before || 0);
+                const sfb = Number(b.shape_fails_before || 0);
+                if (sfa !== sfb) return dir === 'desc' ? sfb - sfa : sfa - sfb;
+                return 0;
+            }
+            if (actionSortState.col === 'fails_after') {
+                const getVal = (x) => (x.fails_after !== undefined && x.fails_after !== null && x.fails_after !== '-') ? Number(x.fails_after) : -1;
+                const fa = getVal(a);
+                const fb = getVal(b);
+                if (fa === -1 && fb === -1) {
+                    const fbA = Number(a.fails_before || a.fail_event_count || 0);
+                    const fbB = Number(b.fails_before || b.fail_event_count || 0);
+                    return fbB - fbA;
+                }
+                if (fa === -1) return 1;
+                if (fb === -1) return -1;
+                if (fa !== fb) return dir === 'desc' ? fb - fa : fa - fb;
+                const sfa = Number(a.shape_fails_after || 0);
+                const sfb = Number(b.shape_fails_after || 0);
+                if (sfa !== sfb) return dir === 'desc' ? sfb - sfa : sfa - sfb;
+                return 0;
+            }
+            if (actionSortState.col === 'pid') {
+                const pa = (a.pid_invoice || a.key || a.pid || '').toLowerCase();
+                const pb = (b.pid_invoice || b.key || b.pid || '').toLowerCase();
+                return dir === 'desc' ? pb.localeCompare(pa) : pa.localeCompare(pb);
+            }
+            if (actionSortState.col === 'status') {
+                const sa = (a.classification || '').toLowerCase();
+                const sb = (b.classification || '').toLowerCase();
+                return dir === 'desc' ? sb.localeCompare(sa) : sa.localeCompare(sb);
+            }
+            if (actionSortState.col === 'issue') {
+                const ia = (a.reason_cluster || '').toLowerCase();
+                const ib = (b.reason_cluster || '').toLowerCase();
+                return dir === 'desc' ? ib.localeCompare(ia) : ia.localeCompare(ib);
+            }
+            if (actionSortState.col === 'correction') {
+                const ca = (a.correction_timestamp && a.correction_timestamp !== 'N/A') ? a.correction_timestamp : '';
+                const cb = (b.correction_timestamp && b.correction_timestamp !== 'N/A') ? b.correction_timestamp : '';
+                if (!ca && !cb) return 0;
+                if (!ca) return 1;
+                if (!cb) return -1;
+                return dir === 'desc' ? cb.localeCompare(ca) : ca.localeCompare(cb);
+            }
+            if (actionSortState.col === 'person') {
+                const pa = (a.done_by || '').toLowerCase();
+                const pb = (b.done_by || '').toLowerCase();
+                return dir === 'desc' ? pb.localeCompare(pa) : pa.localeCompare(pb);
+            }
+            return 0;
+        });
+    }
+
+    // Update sort icons in action-needed-table header
+    document.querySelectorAll('#action-needed-table th.sortable').forEach(th => {
+        const col = th.getAttribute('data-sort');
+        const icon = th.querySelector('.sort-icon');
+        if (icon) {
+            if (col === actionSortState.col) {
+                icon.textContent = actionSortState.dir === 'desc' ? '▼' : '▲';
+                icon.style.opacity = '1';
+                icon.style.color = 'var(--text-bright, #00F2FE)';
+            } else {
+                icon.textContent = '↕';
+                icon.style.opacity = '0.5';
+                icon.style.color = '';
+            }
+        }
+    });
+
+    tbody.innerHTML = items.map(c => {
+        const displayKey = c.pid_invoice || c.key || c.pid;
+        const lookupKey = c.pid_invoice || c.key || c.pid;
+
+        let fb = '-';
+        if (c.fails_before !== undefined && c.fails_before !== null) {
+            if (c.shape_fails_before !== undefined && c.shape_fails_before !== null && c.shape_fails_before !== c.fails_before) {
+                fb = `${c.fails_before} <small class="text-muted">(${c.shape_fails_before} shape)</small>`;
+            } else {
+                fb = `${c.fails_before}`;
+            }
+        } else if (c.fail_event_count) {
+            fb = `${c.fail_event_count}`;
+        }
+
+        let fa = '-';
+        if (c.fails_after !== undefined && c.fails_after !== null && c.fails_after !== '-') {
+            if (c.shape_fails_after !== undefined && c.shape_fails_after !== null && c.shape_fails_after !== c.fails_after) {
+                fa = `${c.fails_after} <small class="text-muted">(${c.shape_fails_after} shape)</small>`;
+            } else {
+                fa = `${c.fails_after}`;
+            }
+        }
+
+        return `
         <tr>
-            <td><strong class="cursor-pointer text-blue" onclick="quickLookupPID('${escHtml(c.pid)}')">${escHtml(c.pid)}</strong></td>
+            <td><strong class="cursor-pointer text-blue" onclick="quickLookupPID('${escHtml(lookupKey)}')">${escHtml(displayKey)}</strong></td>
             <td><span class="tag tag-${escHtml(c.classification)}">${escHtml(c.classification)}</span></td>
-            <td>${c.fail_event_count}</td><td>${c.fail_events_b}</td>
+            <td>${fb}</td><td>${fa}</td>
             <td>${escHtml(c.reason_cluster)}</td>
             <td>${c.correction_timestamp && c.correction_timestamp !== 'N/A' ? escHtml(c.correction_timestamp) : '-'}</td>
             <td>${escHtml(c.done_by) || '-'}</td>
-        </tr>`).join('') || '<tr><td colspan="7" class="text-center text-muted" style="padding: 16px;">No PIDs match this selection</td></tr>';
+        </tr>`;
+    }).join('') || '<tr><td colspan="7" class="text-center text-muted" style="padding: 16px;">No PID.Invoices match this selection</td></tr>';
+}
+
+function sortActionList(col) {
+    if (actionSortState.col === col) {
+        actionSortState.dir = (actionSortState.dir === 'desc') ? 'asc' : 'desc';
+    } else {
+        actionSortState.col = col;
+        actionSortState.dir = (col === 'fails_before' || col === 'fails_after' || col === 'correction') ? 'desc' : 'asc';
+    }
+    renderActionTableBody();
+}
+
+function setupActionTableSorting() {
+    document.querySelectorAll('#action-needed-table th.sortable').forEach(th => {
+        th.addEventListener('click', () => {
+            const col = th.getAttribute('data-sort');
+            if (col) sortActionList(col);
+        });
+    });
 }
 
 function filterActionListByClassification(label) {
@@ -793,8 +1045,12 @@ function filterActionListByClassification(label) {
         return c.classification === label;
     });
 
-    // Sort worst first: fail_events_b desc, fail_event_count desc
-    filtered.sort((a, b) => (b.fail_events_b || 0) - (a.fail_events_b || 0) || (b.fail_event_count || 0) - (a.fail_event_count || 0));
+    // Reset explicit column sort when filtering by slice so default worst-first sort applies
+    actionSortState.col = null;
+    actionSortState.dir = 'desc';
+
+    // Sort worst first: fails_after desc, fails_before desc
+    filtered.sort((a, b) => ((b.fails_after != null ? b.fails_after : -1) - (a.fails_after != null ? a.fails_after : -1)) || ((b.fails_before || 0) - (a.fails_before || 0)));
 
     const headerTitle = document.getElementById('action-table-title');
     const headerSub = document.getElementById('action-table-sub');
@@ -808,7 +1064,7 @@ function filterActionListByClassification(label) {
         headerTitle.innerHTML = `PIDs Needing Action &mdash; <span style="color:${tagColor}; font-weight:800;">${escHtml(label)} (${filtered.length})</span>`;
     }
     if (headerSub) {
-        headerSub.innerHTML = `Filtered by slice <strong>${escHtml(label)}</strong> (${filtered.length} total PIDs). <button type="button" class="btn btn-sm btn-secondary" onclick="resetActionListFilter()" style="margin-left: 10px; padding: 2px 10px; font-size: 0.74rem; cursor: pointer; border-radius: 6px;">✕ Reset Filter</button>`;
+        headerSub.innerHTML = `Filtered by slice <strong>${escHtml(label)}</strong> (${filtered.length} total PID.Invoices). <button type="button" class="btn btn-sm btn-secondary" onclick="resetActionListFilter()" style="margin-left: 10px; padding: 2px 10px; font-size: 0.74rem; cursor: pointer; border-radius: 6px;">✕ Reset Filter</button>`;
     }
 
     renderActionList(filtered);
@@ -823,10 +1079,12 @@ window.filterActionListByClassification = filterActionListByClassification;
 
 function resetActionListFilter() {
     currentActionFilter = null;
+    actionSortState.col = null;
+    actionSortState.dir = 'desc';
     const headerTitle = document.getElementById('action-table-title');
     const headerSub = document.getElementById('action-table-sub');
     if (headerTitle) headerTitle.innerText = 'PIDs Needing Action';
-    if (headerSub) headerSub.innerText = 'Recurred and Pending PIDs, worst first (by Period B failures). Click a PID for its full history.';
+    if (headerSub) headerSub.innerText = 'Recurred and Pending PID.Invoices, worst first (by Period B failures). Click a PID.Invoice for its full history.';
     if (globalData && globalData.action_list) {
         renderActionList(globalData.action_list);
     }
@@ -851,11 +1109,12 @@ async function openDrilldown(catType, val1) {
 
         data.pids.forEach(p => {
             const tr = document.createElement('tr');
+            const displayKey = p.pid_invoice || p.key || p.pid;
+            const lookupKey = p.pid_invoice || p.key || p.pid;
             tr.innerHTML = `
-                <td><strong class="cursor-pointer text-blue" onclick="quickLookupPID('${p.pid}')">${p.pid}</strong></td>
+                <td><strong class="cursor-pointer text-blue" onclick="quickLookupPID('${escHtml(lookupKey)}')">${escHtml(displayKey)}</strong></td>
                 <td><span class="tag tag-${p.classification.replace(/\s+/g, '')}">${p.classification}</span></td>
                 <td>${p.reason_cluster}</td>
-                <td>${p.qc_person_id}</td>
                 <td>${p.fail_event_count || 1}</td>
             `;
             tbody.appendChild(tr);
@@ -877,19 +1136,29 @@ function setupMainTabs() {
         { btn: 'tab-btn-impact', view: 'impact-view', action: () => fetchImpact() }
     ];
     tabs.forEach(t => {
-        document.getElementById(t.btn).addEventListener('click', () => {
-            tabs.forEach(o => {
-                document.getElementById(o.btn).classList.toggle('active', o === t);
-                document.getElementById(o.view).classList.toggle('hidden', o !== t);
+        const btn = document.getElementById(t.btn);
+        if (btn) {
+            btn.addEventListener('click', () => {
+                tabs.forEach(o => {
+                    const ob = document.getElementById(o.btn);
+                    const ov = document.getElementById(o.view);
+                    if (ob) ob.classList.toggle('active', o === t);
+                    if (ov) ov.classList.toggle('hidden', o !== t);
+                });
+                if (t.action) t.action();
             });
-            if (t.action) t.action();
-        });
+        }
     });
-    document.getElementById('impact-search').addEventListener('input', () => renderImpactTable());
-    document.getElementById('impact-status').addEventListener('change', () => renderImpactTable());
-    document.getElementById('btn-impact-save').addEventListener('click', saveImpactSettings);
-    document.getElementById('btn-impact-check').addEventListener('click', checkPidInvoice);
-    document.getElementById('impact-check-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') checkPidInvoice(); });
+    const impSearch = document.getElementById('impact-search');
+    if (impSearch) impSearch.addEventListener('input', () => renderImpactTable());
+    const impStatus = document.getElementById('impact-status');
+    if (impStatus) impStatus.addEventListener('change', () => renderImpactTable());
+    const impSave = document.getElementById('btn-impact-save');
+    if (impSave) impSave.addEventListener('click', saveImpactSettings);
+    const impCheck = document.getElementById('btn-impact-check');
+    if (impCheck) impCheck.addEventListener('click', checkPidInvoice);
+    const impInput = document.getElementById('impact-check-input');
+    if (impInput) impInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') checkPidInvoice(); });
 }
 
 function setupExplorerSubtabs() {
@@ -897,7 +1166,6 @@ function setupExplorerSubtabs() {
         { btn: 'subtab-master', panel: 'exp-panel-master', action: refreshMaster },
         { btn: 'subtab-pid', panel: 'exp-panel-pid' },
         { btn: 'subtab-classifications', panel: 'exp-panel-classifications', action: fetchExplorerClassifications },
-        { btn: 'subtab-clusters', panel: 'exp-panel-clusters', action: fetchExplorerClusters },
         { btn: 'subtab-fails', panel: 'exp-panel-fails', action: fetchExplorerFails }
     ];
 
@@ -935,9 +1203,12 @@ function setupExplorerControls() {
     bindExplorerTableControls('exp-fails', expFailsState, fetchExplorerFails, [], 'exp-fails-period-filter', 'period');
     // Master database
     bindExplorerTableControls('exp-master', expMasterState, fetchExplorerMaster, [], 'exp-master-type', 'type');
-    document.getElementById('exp-master-from').addEventListener('change', (e) => { expMasterState.date_from = e.target.value; expMasterState.page = 1; fetchExplorerMaster(); });
-    document.getElementById('exp-master-to').addEventListener('change', (e) => { expMasterState.date_to = e.target.value; expMasterState.page = 1; fetchExplorerMaster(); });
-    document.getElementById('btn-master-export').addEventListener('click', () => {
+    const expMasterFrom = document.getElementById('exp-master-from');
+    if (expMasterFrom) expMasterFrom.addEventListener('change', (e) => { expMasterState.date_from = e.target.value; expMasterState.page = 1; fetchExplorerMaster(); });
+    const expMasterTo = document.getElementById('exp-master-to');
+    if (expMasterTo) expMasterTo.addEventListener('change', (e) => { expMasterState.date_to = e.target.value; expMasterState.page = 1; fetchExplorerMaster(); });
+    const btnMasterExp = document.getElementById('btn-master-export');
+    if (btnMasterExp) btnMasterExp.addEventListener('click', () => {
         const p = expMasterState;
         window.location = `/api/explorer/master/export?search=${encodeURIComponent(p.search)}&type=${p.type}&date_from=${p.date_from}&date_to=${p.date_to}&sort_order=asc`;
     });
@@ -956,7 +1227,10 @@ function bindExplorerTableControls(prefix, stateObj, fetchFn, sortableCols = [],
         limitEl.addEventListener('change', (e) => { stateObj.limit = parseInt(e.target.value); stateObj.page = 1; fetchFn(); });
     }
     if (filterElId && filterProp) {
-        document.getElementById(filterElId).addEventListener('change', (e) => { stateObj[filterProp] = e.target.value; stateObj.page = 1; fetchFn(); });
+        const filterEl = document.getElementById(filterElId);
+        if (filterEl) {
+            filterEl.addEventListener('change', (e) => { stateObj[filterProp] = e.target.value; stateObj.page = 1; fetchFn(); });
+        }
     }
     if (prevBtn) {
         prevBtn.addEventListener('click', () => { if (stateObj.page > 1) { stateObj.page--; fetchFn(); } });
@@ -997,12 +1271,28 @@ async function fetchPIDHistory(pid) {
 
         document.getElementById('pid-history-container').classList.remove('hidden');
 
-        document.getElementById('pid-summary-id').innerText = `PID: #${data.pid}`;
+        const displayKey = data.pid_invoice || data.pid;
+        document.getElementById('pid-summary-id').innerText = displayKey.includes('.') ? `PID.Invoice: #${displayKey}` : `PID: #${displayKey}`;
         document.getElementById('pid-summary-invoice').innerText = data.primary_invoice || 'N/A';
-        document.getElementById('pid-summary-machine').innerText = data.primary_machine || 'N/A';
         document.getElementById('pid-fails-count').innerText = data.fails_count;
+        const elFb = document.getElementById('pid-fails-before');
+        if (elFb) {
+            if (data.shape_fails_before !== undefined && data.shape_fails_before !== null && data.shape_fails_before !== data.fails_before) {
+                elFb.innerText = `${data.fails_before} (${data.shape_fails_before} shape)`;
+            } else {
+                elFb.innerText = (data.fails_before !== undefined && data.fails_before !== null) ? data.fails_before : '-';
+            }
+        }
+        const elFa = document.getElementById('pid-fails-after');
+        if (elFa) {
+            if (data.shape_fails_after !== undefined && data.shape_fails_after !== null && data.shape_fails_after !== data.fails_after) {
+                elFa.innerText = `${data.fails_after} (${data.shape_fails_after} shape)`;
+            } else {
+                elFa.innerText = (data.fails_after !== undefined && data.fails_after !== null) ? data.fails_after : '-';
+            }
+        }
         document.getElementById('pid-corr-count').innerText = data.corrections_count;
-        document.getElementById('pid-primary-reason').innerText = data.primary_reason_cluster || 'N/A';
+        document.getElementById('pid-primary-reason').innerText = data.primary_reason || data.primary_reason_cluster || 'N/A';
         document.getElementById('pid-summary-tech').innerText = data.latest_tech || 'N/A';
 
         const badge = document.getElementById('pid-status-badge');
@@ -1010,7 +1300,7 @@ async function fetchPIDHistory(pid) {
         badge.className = `badge tag-${data.classification.replace(/\s+/g, '')}`;
 
         const btnFocus = document.getElementById('btn-pid-add-correction');
-        if (btnFocus) btnFocus.onclick = () => focusMainLogForm(data.pid);
+        if (btnFocus) btnFocus.onclick = () => focusMainLogForm(data.pid_invoice || data.pid);
 
         // Fails table
         const failsTbody = document.getElementById('pid-fails-tbody');
@@ -1018,18 +1308,33 @@ async function fetchPIDHistory(pid) {
         if (data.fails_history && data.fails_history.length > 0) {
             data.fails_history.forEach(f => {
                 const tr = document.createElement('tr');
+                const timingStr = f.timing || f.period || 'Before';
+                let timingBadge = `<span class="badge" style="background: rgba(56, 189, 248, 0.18); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35); padding: 2px 8px; border-radius: 4px; font-weight: 700; font-size: 0.72rem;">BEFORE</span>`;
+                if (timingStr === 'After') {
+                    timingBadge = `<span class="badge" style="background: rgba(239, 68, 68, 0.18); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.35); padding: 2px 8px; border-radius: 4px; font-weight: 700; font-size: 0.72rem;">AFTER</span>`;
+                } else if (timingStr === 'Pending') {
+                    timingBadge = `<span class="badge" style="background: rgba(234, 179, 8, 0.18); color: #facc15; border: 1px solid rgba(234, 179, 8, 0.35); padding: 2px 8px; border-radius: 4px; font-weight: 700; font-size: 0.72rem;">PENDING</span>`;
+                }
+
+                const cleanDate = (f.QC_created_date && f.QC_created_date.endsWith(' 00:00:00'))
+                    ? f.QC_created_date.replace(' 00:00:00', '')
+                    : (f.QC_created_date || 'N/A');
+
+                const isMei = !!f.is_mei_attributable;
+                const meiBadge = isMei
+                    ? `<span style="display:inline-block; font-size:10px; font-weight:700; padding:1px 6px; border-radius:4px; background:rgba(239, 68, 68, 0.15); color:#ef4444; border:1px solid rgba(239,68,68,0.3); margin-right:6px;">MEI Shape</span>`
+                    : `<span style="display:inline-block; font-size:10px; font-weight:600; padding:1px 6px; border-radius:4px; background:rgba(148, 163, 184, 0.15); color:#94a3b8; border:1px solid rgba(148,163,184,0.3); margin-right:6px;">Other Defect</span>`;
+
                 tr.innerHTML = `
-                    <td><strong>${f.period}</strong></td>
-                    <td>${f.QC_created_date}</td>
-                    <td>${f.invoice || f.vendor_invoice_number || 'N/A'}</td>
-                    <td>${f.qc_person_id}</td>
-                    <td>${f.reason_raw}</td>
-                    <td><small>${f.shift_bucket || 'N/A'}</small></td>
+                    <td>${timingBadge}</td>
+                    <td style="white-space: nowrap; font-size: 0.8rem;">${escHtml(cleanDate)}</td>
+                    <td>${escHtml(f.invoice || f.vendor_invoice_number || 'N/A')}</td>
+                    <td>${meiBadge}<span>${escHtml(f.reason_raw || 'N/A')}</span></td>
                 `;
                 failsTbody.appendChild(tr);
             });
         } else {
-            failsTbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted">No QC failures for this PID</td></tr>`;
+            failsTbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted" style="padding: 16px;">No QC failures for this PID</td></tr>`;
         }
 
         // Corrections table
@@ -1041,9 +1346,15 @@ async function fetchPIDHistory(pid) {
                 const b = c.dims_before || {};
                 const a = c.dims_after || {};
                 const fmt = (v) => (v !== null && v !== undefined && !isNaN(v)) ? v : '-';
-                const beforeStr = `A:${fmt(b.A)} B:${fmt(b.B)} CR:${fmt(b.CIRC_R)} CL:${fmt(b.CIRC_L)}`;
-                const afterStr = `A1:${fmt(a.A1)} B1:${fmt(a.B1)} CR1:${fmt(a.CIRC_R1)} CL1:${fmt(a.CIRC_L1)}`;
-                const sourceTag = c.is_manual ? `<span class="tag-manual">Manual</span>` : `<small>${c.sheet}</small>`;
+                const hasB = [b.A, b.B, b.CIRC_R, b.CIRC_L].some(v => v !== null && v !== undefined && !isNaN(v));
+                const hasA = [a.A1, a.B1, a.CIRC_R1, a.CIRC_L1].some(v => v !== null && v !== undefined && !isNaN(v));
+                const beforeStr = hasB ? `A:${fmt(b.A)} B:${fmt(b.B)} CR:${fmt(b.CIRC_R)} CL:${fmt(b.CIRC_L)}` : '-';
+                const afterStr = hasA ? `A1:${fmt(a.A1)} B1:${fmt(a.B1)} CR1:${fmt(a.CIRC_R1)} CL1:${fmt(a.CIRC_L1)}` : '-';
+                const sourceTag = c.is_manual ? `<span class="tag-manual">Manual</span>` : `<small>${escHtml(c.sheet || 'Tracker')}</small>`;
+
+                const cleanCorrDate = (c.timestamp && c.timestamp.endsWith(' 00:00:00'))
+                    ? c.timestamp.replace(' 00:00:00', '')
+                    : (c.timestamp || 'N/A');
 
                 let actionHtml = '-';
                 if (c.is_manual) {
@@ -1051,18 +1362,18 @@ async function fetchPIDHistory(pid) {
                 }
 
                 tr.innerHTML = `
-                    <td>${c.timestamp}</td>
+                    <td style="white-space: nowrap; font-size: 0.8rem;">${escHtml(cleanCorrDate)}</td>
                     <td>${sourceTag}</td>
-                    <td>${c.issue_raw}</td>
-                    <td><small>${beforeStr}</small></td>
-                    <td><small>${afterStr}</small></td>
+                    <td>${escHtml(c.issue_raw || 'Correction')}</td>
+                    <td><small style="font-family: monospace;">${beforeStr}</small></td>
+                    <td><small style="font-family: monospace; color: #38bdf8;">${afterStr}</small></td>
                     <td>${escHtml(c.done_by) || '-'}</td>
                     <td>${actionHtml}</td>
                 `;
                 corrTbody.appendChild(tr);
             });
         } else {
-            corrTbody.innerHTML = `<tr><td colspan="7" class="text-center text-muted">No corrections logged. Click "+ Log Correction".</td></tr>`;
+            corrTbody.innerHTML = `<tr><td colspan="7" class="text-center text-muted" style="padding: 16px;">No corrections logged. Click "+ Log Correction".</td></tr>`;
         }
     } catch (e) {
         alert(`Error looking up PID ${pid}: ${e.message}`);
@@ -1086,14 +1397,15 @@ async function fetchExplorerClassifications() {
         tbody.innerHTML = '';
         data.data.forEach(r => {
             const tr = document.createElement('tr');
+            const displayKey = r.pid_invoice || r.key || r.pid;
+            const lookupKey = r.pid_invoice || r.key || r.pid;
             tr.innerHTML = `
-                <td><strong class="cursor-pointer text-blue" onclick="quickLookupPID('${r.pid}')">${r.pid}</strong></td>
+                <td><strong class="cursor-pointer text-blue" onclick="quickLookupPID('${escHtml(lookupKey)}')">${escHtml(displayKey)}</strong></td>
                 <td><span class="tag tag-${r.classification.replace(/\s+/g, '')}">${r.classification}</span></td>
                 <td>${r.reason_cluster || '-'}</td>
-                <td>${r.qc_person_id || '-'}</td>
                 <td>${r.fail_event_count || 1}</td>
                 <td>${r.first_fail_timestamp || '-'}</td>
-                <td><button class="btn-expand-row" onclick="quickLookupPID('${r.pid}')">→ View</button></td>
+                <td><button class="btn-expand-row" onclick="quickLookupPID('${escHtml(lookupKey)}')">→ View</button></td>
             `;
             tbody.appendChild(tr);
         });
@@ -1102,38 +1414,6 @@ async function fetchExplorerClassifications() {
     }
 }
 
-// =====================
-// EXPLORER: CLUSTERS
-// =====================
-async function fetchExplorerClusters() {
-    try {
-        const res = await fetch('/api/explorer/clusters');
-        const clusters = await res.json();
-
-        const container = document.getElementById('clusters-accordion-container');
-        container.innerHTML = '';
-
-        clusters.forEach(c => {
-            const card = document.createElement('div');
-            card.className = 'glass-card cluster-card';
-            const meiTag = c.is_mei_attributable ? `<span class="tag-mei">MEI Machine</span>` : '';
-
-            let membersHtml = '';
-            c.members.forEach(m => {
-                membersHtml += `<div class="member-item"><span>${m.raw_string}</span><span class="member-count">${m.count}</span></div>`;
-            });
-
-            card.innerHTML = `
-                <div class="cluster-title-row"><h4>${c.cluster_representative}</h4>${meiTag}</div>
-                <p class="history-subtext">Total: <strong>${c.total_count}</strong> | Merged: ${c.members.length}</p>
-                <div class="cluster-members-list">${membersHtml}</div>
-            `;
-            container.appendChild(card);
-        });
-    } catch (e) {
-        console.error("Fetch clusters error:", e);
-    }
-}
 
 // =====================
 // EXPLORER: RAW FAILS
@@ -1145,20 +1425,27 @@ async function fetchExplorerFails() {
         const res = await fetch(url);
         const data = await res.json();
 
-        document.getElementById('exp-fails-page-info').innerText = `Page ${data.page}/${data.total_pages} (${data.total_rows} rows)`;
+        document.getElementById('exp-fails-page-info').innerText = `Page ${data.page}/${data.total_pages} (${(data.total_rows || 0).toLocaleString()} rows)`;
         document.getElementById('exp-fails-page-num').innerText = data.page;
 
         const tbody = document.getElementById('exp-fails-tbody');
         tbody.innerHTML = '';
+        if (!data.data || data.data.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding:32px; color:var(--text-muted); font-size:0.9rem;">No QC failure records found matching search or filter.</td></tr>`;
+            return;
+        }
         data.data.forEach(r => {
             const tr = document.createElement('tr');
+            const dispPid = r.pid_invoice || r.pid;
+            const meiBadge = r.is_mei_attributable
+                ? `<span style="display:inline-block; font-size:10px; font-weight:700; padding:2px 7px; border-radius:4px; background:rgba(239, 68, 68, 0.15); color:#ef4444; border:1px solid rgba(239,68,68,0.3); margin-right:6px;">MEI Shape</span>`
+                : `<span style="display:inline-block; font-size:10px; font-weight:600; padding:2px 7px; border-radius:4px; background:rgba(148, 163, 184, 0.15); color:#94a3b8; border:1px solid rgba(148,163,184,0.3); margin-right:6px;">Other Defect</span>`;
             tr.innerHTML = `
-                <td><strong class="cursor-pointer text-blue" onclick="quickLookupPID('${r.pid}')">${r.pid}</strong></td>
-                <td>${r.period}</td>
-                <td>${r.QC_created_date}</td>
-                <td>${r.reason_raw}</td>
-                <td>${r.qc_person_id}</td>
-                <td>${r.vendor_invoice_number}</td>
+                <td><strong class="cursor-pointer text-blue" onclick="quickLookupPID('${escHtml(dispPid)}')">${escHtml(dispPid)}</strong></td>
+                <td>${escHtml(r.period)}</td>
+                <td>${escHtml(r.QC_created_date)}</td>
+                <td>${meiBadge}<span>${escHtml(r.reason_raw)}</span></td>
+                <td>${escHtml(r.vendor_invoice_number)}</td>
             `;
             tbody.appendChild(tr);
         });
@@ -1170,14 +1457,14 @@ async function fetchExplorerFails() {
 // =====================
 // EXPLORER: CORRECTIONS
 // =====================
-const escHtml = (v) => String(v ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+const escHtml = (v) => String(v ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 
 // Editable dimension cell group for manual entries (A/B/CR/CL or A1/B1/CR1/CL1)
 function dimInputs(entryId, group, vals) {
     const v = (x) => (x !== null && x !== undefined && !isNaN(x)) ? x : '';
     const fields = group === 'before'
-        ? [['a','A',vals.A],['b','B',vals.B],['circ_r','CR',vals.CIRC_R],['circ_l','CL',vals.CIRC_L]]
-        : [['a1','A1',vals.A1],['b1','B1',vals.B1],['circ_r1','CR1',vals.CIRC_R1],['circ_l1','CL1',vals.CIRC_L1]];
+        ? [['a', 'A', vals.A], ['b', 'B', vals.B], ['circ_r', 'CR', vals.CIRC_R], ['circ_l', 'CL', vals.CIRC_L]]
+        : [['a1', 'A1', vals.A1], ['b1', 'B1', vals.B1], ['circ_r1', 'CR1', vals.CIRC_R1], ['circ_l1', 'CL1', vals.CIRC_L1]];
     return `<div class="dim-edit-grid">` + fields.map(([key, label, val]) =>
         `<label class="dim-edit"><span>${label}</span><input type="number" step="0.01" class="dim-edit-input" data-entry="${escHtml(entryId)}" data-key="${key}" value="${v(val)}" /></label>`
     ).join('') + `</div>`;
@@ -1235,7 +1522,7 @@ async function fetchExplorerCorrections() {
                 : `<span class="text-muted" title="Imported from the correction workbook; edit it there">-</span>`;
 
             tr.innerHTML = `
-                <td><strong class="cursor-pointer text-blue" onclick="quickLookupPID('${escHtml(r.pid)}')">${escHtml(r.pid_invoice || r.pid)}</strong></td>
+                <td><strong class="cursor-pointer text-blue" onclick="quickLookupPID('${escHtml(r.pid_invoice || r.pid)}')">${escHtml(r.pid_invoice || r.pid)}</strong></td>
                 <td>${escHtml(r.timestamp)}</td>
                 <td><small>${escHtml(r.sheet)}</small></td>
                 <td>${escHtml(r.issue_raw)}</td>
@@ -1300,7 +1587,7 @@ async function fetchExplorerMaster() {
             <tr>
                 <td><span class="${r.type === 'QC Fail' ? 'tag-fail' : 'tag-corr'}">${escHtml(r.type)}</span></td>
                 <td>${escHtml(r.date)}</td>
-                <td><strong class="cursor-pointer text-blue" onclick="quickLookupPID('${escHtml(r.pid)}')">${escHtml(r.pid_invoice)}</strong></td>
+                <td><strong class="cursor-pointer text-blue" onclick="quickLookupPID('${escHtml(r.pid_invoice || r.pid)}')">${escHtml(r.pid_invoice)}</strong></td>
                 <td>${escHtml(r.reason)}</td>
                 <td>${escHtml(r.who)}</td>
                 <td><small>${escHtml(r.detail)}</small></td>
@@ -1320,65 +1607,34 @@ const rateTxt = (o) => (o && o.rate !== null && o.rate !== undefined) ? `${o.rat
 const fdate = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '-';
 
 async function fetchImpact() {
+    showScLoading("Analyzing correction impact from QC Raw Data (3)...");
     try {
-        const res = await fetch('/api/impact');
-        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Failed');
+        const params = new URLSearchParams();
+        if (scDateFrom) params.set('date_from', scDateFrom);
+        if (scDateTo) params.set('date_to', scDateTo);
+        const url = '/api/shape/impact_by_date' + (params.toString() ? '?' + params.toString() : '');
+        const res = await fetch(url);
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || err.detail || 'Failed to load impact analysis');
+        }
         impactData = await res.json();
         renderImpact();
     } catch (e) {
-        document.getElementById('impact-cards').innerHTML = `<div class="master-warning-item">Could not load impact: ${escHtml(e.message)}</div>`;
+        console.error("Impact fetch error:", e);
+        const tbody = document.getElementById('impact-tbody');
+        if (tbody) {
+            tbody.innerHTML = `<tr><td colspan="8" class="text-center text-red" style="padding: 2.5rem;">Could not load impact: ${escHtml(e.message)}</td></tr>`;
+        }
+    } finally {
+        hideScLoading();
     }
 }
 
+let impactSortState = { col: null, dir: 'desc' };
+
 function renderImpact() {
-    const d = impactData, s = d.summary, c = s.counts;
-    const judged = c['Fixed'] + c['Improved'] + c['Still failing'];
-    const pct = (n) => judged ? ` (${Math.round(n / judged * 100)}% of judged)` : '';
-    const card = (t, v, desc, cls = '') => `<div class="glass-card kpi-card"><div class="kpi-title">${t}</div><div class="kpi-value ${cls}">${v}</div><div class="kpi-desc">${desc}</div></div>`;
-    document.getElementById('impact-cards').innerHTML =
-        card('Corrections', s.total - c['No correction done'], `with dimensions logged · ${c['No correction done']} flagged "no correction"`) +
-        card('Fixed', c['Fixed'], 'No MEI shape fail since the correction' + pct(c['Fixed']), 'text-green') +
-        card('Improved', c['Improved'], 'Fail rate at least halved' + pct(c['Improved']), 'text-blue') +
-        card('Still failing', c['Still failing'], 'Failing at a similar rate' + pct(c['Still failing']), 'text-red') +
-        card('Not tested yet', c['Not tested yet'], `Fewer than ${d.settings.min_volume} lenses QC'd since the correction`) +
-        card('Needs a correction', d.pending.count, `PID.Invoices with ${d.settings.fail_threshold}+ fails and no correction`, 'text-red');
-
-    const warn = [...(d.row_cap_notes || [])];
-    const cov = d.coverage || {};
-    const covTxt = Object.entries(cov).map(([k, v]) => `${k}: ${v.qc_done.toLocaleString()} lenses QC'd, cut ${fdate(v.cut_from)} - ${fdate(v.cut_to)} (most between ${fdate(v.bulk_from)} and ${fdate(v.bulk_to)})`).join(' &nbsp;|&nbsp; ');
-    const w = document.getElementById('impact-warnings');
-    if (warn.length) { w.innerHTML = warn.map(x => `<div class="master-warning-item">⚠ ${escHtml(x)}</div>`).join(''); w.classList.remove('hidden'); } else { w.classList.add('hidden'); }
-    const ob = d.observed || {};
-    document.getElementById('impact-coverage').innerHTML = `<strong>QC exports cover lenses QC'd ${fdate(ob.from)} - ${fdate(ob.to)}.</strong> A correction is judged only on lenses cut after its date and not before ${fdate(ob.from)}, because lenses cut earlier are only partly in the exports.<br><strong>All QC'd lenses by cut date:</strong> ${covTxt}`;
-    renderFindings(d);
-
-    const p = s.pooled;
-    document.getElementById('impact-pooled').innerHTML =
-        `<tr><td>Before correction <small>(sheet stats, ${p.before_n} corrections)</small></td><td>${p.before.fails}</td><td>${p.before.qc_done}</td><td><strong>${nv(p.before.rate)}%</strong></td></tr>` +
-        `<tr><td>After, Period A QC data</td><td>${p.after_a.fails}</td><td>${p.after_a.qc_done}</td><td><strong>${nv(p.after_a.rate)}%</strong></td></tr>` +
-        `<tr><td>After, Period B QC data</td><td>${p.after_b.fails}</td><td>${p.after_b.qc_done}</td><td><strong>${nv(p.after_b.rate)}%</strong></td></tr>`;
-
-    document.getElementById('impact-windows').innerHTML = d.windows.map(x => `<tr><td>${escHtml(x.sheet)}${x.overridden ? ' <span class="tag-corr">edited</span>' : ''}</td>
-        <td><input type="date" class="select-input" data-norm="${escHtml(x.norm)}" data-k="start" value="${x.start}" /></td>
-        <td><input type="date" class="select-input" data-norm="${escHtml(x.norm)}" data-k="end" value="${x.end}" /></td></tr>`).join('');
-    document.getElementById('impact-min-volume').value = d.settings.min_volume;
-    document.getElementById('impact-threshold').value = d.settings.fail_threshold;
-
-    document.getElementById('impact-pending-sub').innerText = `${d.pending.count} PID.Invoices; showing the ${d.pending.rows.length} with the most failures.`;
-    document.getElementById('impact-pending').innerHTML = d.pending.rows.map(r => `<tr>
-        <td><strong class="cursor-pointer text-blue" onclick="quickLookupPID('${escHtml(r.key)}')">${escHtml(r.key)}</strong></td>
-        <td>${r.fails_a}</td><td>${r.fails_b}</td><td>${nv(r.rate)}%</td>
-        <td><small>${r.in_lists.map(l => escHtml(l.list) + ': ' + escHtml(l.status)).join(', ') || '-'}</small></td></tr>`).join('') || '<tr><td colspan="5" class="text-center text-muted">None</td></tr>';
-
-    document.getElementById('impact-dims').innerHTML = Object.entries(s.dim_stats).map(([k, v]) =>
-        `<tr><td>${escHtml(k)}</td><td>${v.n}</td><td>${nv(v.mean_shift)}</td><td>${nv(v.mean_abs_shift)}</td></tr>`).join('');
-    const grp = (label, arr) => arr.map(g => `<tr><td>${label}: ${escHtml(g.name)}</td><td>${g.n}</td><td>${g.fixed}</td><td>${g.improved}</td><td>${g.still_failing}</td><td>${nv(g.avg_deviation_pct)}</td></tr>`).join('');
-    document.getElementById('impact-groups').innerHTML = grp('Issue', s.by_issue) + grp('Person', s.by_person);
-
-    document.getElementById('impact-lists-count').innerText = `(${d.list_checks.length})`;
-    document.getElementById('impact-lists').innerHTML = d.list_checks.map(l => `<tr><td>${escHtml(l.list)}</td><td>${l.keys}</td><td>${l.marked_done}</td><td>${l.pending}</td><td>${l.other_status}</td>
-        <td>${l.corrected_then_failing_again.map(x => `${escHtml(x.from_sheet.trim())}: <strong>${x.count}</strong> of ${l.corrected_sheet_sizes[x.from_sheet]}`).join('<br>') || '-'}</td>
-        <td>${Object.entries(l.repeat_from_earlier_lists).map(([k, v]) => `${escHtml(k)}: <strong>${v}</strong>`).join('<br>') || '-'}</td></tr>`).join('');
+    if (!impactData) return;
     renderImpactTable();
 }
 
@@ -1389,47 +1645,161 @@ function refreshImpactIfOpen() {
 }
 
 function renderFindings(d) {
-    const s = d.summary, c = s.counts, p = s.pooled, out = [];
-    const judged = c['Fixed'] + c['Improved'] + c['Still failing'];
-    const pc = (n, t) => t ? Math.round(n / t * 100) + '%' : '-';
-    out.push(`<strong>${c['Fixed']} of ${judged}</strong> judged corrections are fixed (${pc(c['Fixed'], judged)}); ${c['Improved']} improved and ${c['Still failing']} still failing. ${c['Not tested yet']} cannot be judged yet (fewer than ${d.settings.min_volume} lenses QC'd since the correction).`);
-    if (p.before.rate !== null && p.after_a.rate !== null) {
-        out.push(`Fail rate on the corrected PID.Invoices: <strong>${p.before.rate}%</strong> before, <strong>${p.after_a.rate}%</strong> in Period A (${p.after_a.fails} of ${p.after_a.qc_done}), <strong>${nv(p.after_b.rate)}%</strong> in Period B (${p.after_b.fails} of ${p.after_b.qc_done}).`);
-    }
-    const dims = Object.entries(s.dim_stats).filter(([, v]) => v.mean_abs_shift !== null).sort((a, b) => b[1].mean_abs_shift - a[1].mean_abs_shift);
-    if (dims.length) out.push(`Biggest dimension change: <strong>${escHtml(dims[0][0])}</strong> (average ${dims[0][1].mean_shift} mm, average size of change ${dims[0][1].mean_abs_shift} mm over ${dims[0][1].n} corrections).`);
-    s.by_issue.filter(g => g.fixed + g.improved + g.still_failing >= 3).forEach(g => {
-        const j = g.fixed + g.improved + g.still_failing;
-        out.push(`${escHtml(g.name)} corrections: ${g.fixed} of ${j} judged are fixed, ${g.improved} improved, ${g.still_failing} still failing (average deviation ${nv(g.avg_deviation_pct)}%).`);
-    });
-    const ppl = s.by_person.filter(g => g.n >= 3 && g.name !== '-' && g.name !== 'QC Lead').map(g => `${escHtml(g.name)} ${g.fixed + g.improved} of ${g.fixed + g.improved + g.still_failing} fixed or improved`);
-    if (ppl.length) out.push(`By person (judged corrections): ${ppl.join('; ')}.`);
-    const still = d.entries.filter(e => e.status === 'Still failing').map(e => escHtml(e.key));
-    if (still.length) out.push(`<strong>Re-correct first:</strong> ${still.join(', ')}.`);
-    if (d.pending.count) {
-        const top = d.pending.rows.slice(0, 3);
-        out.push(`<strong>${d.pending.count}</strong> PID.Invoices have ${d.settings.fail_threshold}+ fails and no correction. Worst: ${top.map(r => `${escHtml(r.key)} (${r.fails_a + r.fails_b} fails)`).join(', ')}.`);
-    }
-    document.getElementById('impact-findings').innerHTML = out.map(x => `<li>${x}</li>`).join('');
+    // Findings block removed to keep single clean corrections impact table
 }
 
 function renderImpactTable() {
-    if (!impactData) return;
-    const q = document.getElementById('impact-search').value.toLowerCase().trim();
-    const st = document.getElementById('impact-status').value;
-    const dim = (x) => (x.before === null && x.after === null) ? '-' : `${nv(x.before)} → ${nv(x.after)}${x.delta !== null ? ` <small>(${x.delta > 0 ? '+' : ''}${x.delta})</small>` : ''}`;
-    const rows = impactData.entries.filter(e => (st === 'all' || e.status === st) &&
-        (!q || `${e.key} ${e.person} ${e.issue} ${e.sheet} ${e.remark}`.toLowerCase().includes(q)));
-    document.getElementById('impact-count').innerText = `${rows.length} of ${impactData.entries.length}`;
-    document.getElementById('impact-tbody').innerHTML = rows.map(e => `<tr>
-        <td><strong class="cursor-pointer text-blue" onclick="quickLookupPID('${escHtml(e.key)}')">${escHtml(e.key)}</strong>${e.remark ? `<br><small class="text-muted">${escHtml(e.remark)}</small>` : ''}</td>
-        <td><small>${escHtml((e.sheet || '').trim())}<br>${fdate(e.window_end)}</small></td>
-        <td>${escHtml(e.issue)}</td><td>${escHtml(e.person) || '-'}</td><td>${nv(e.deviation_pct)}</td>
-        <td>${dim(e.dims['A'])}</td><td>${dim(e.dims['B'])}</td><td>${dim(e.dims['CIRC R'])}</td><td>${dim(e.dims['CIRC L'])}</td>
-        <td>${e.before.rate !== null ? `${e.before.rate}% <small>(${nv(e.before.fails)}/${nv(e.before.qc_done)})</small>` : '-'}</td>
-        <td>${rateTxt(e.after_a)}</td><td>${rateTxt(e.after_b)}</td>
-        <td><span class="tag-status tag-status-${e.status.replace(/ /g, '-')}">${escHtml(e.status)}</span></td></tr>`).join('')
-        || '<tr><td colspan="13" class="text-center text-muted">No corrections match</td></tr>';
+    if (!impactData || !impactData.entries) return;
+    const q = (document.getElementById('impact-search')?.value || '').toLowerCase().trim();
+    const st = (document.getElementById('impact-status')?.value || 'all').toLowerCase();
+
+    const dim = (x) => {
+        if (!x || (x.before === null && x.after === null)) return '<span class="dim-none">--</span>';
+        const delta = (x.delta !== null && x.delta !== undefined && !isNaN(x.delta)) ? x.delta : null;
+        let deltaHtml = '';
+        if (delta !== null) {
+            const cls = delta > 0 ? 'delta-pos' : delta < 0 ? 'delta-neg' : 'delta-zero';
+            const sign = delta > 0 ? '+' : '';
+            deltaHtml = ` <span class="${cls}">(${sign}${delta})</span>`;
+        }
+        return `<span class="dim-vals">${nv(x.before)}<span class="dim-arrow">→</span>${nv(x.after)}</span>${deltaHtml}`;
+    };
+
+    let rows = impactData.entries.filter(e => {
+        const matchesStatus = (st === 'all' || (e.status && e.status.toLowerCase() === st));
+        const searchStr = `${e.key || ''} ${e.pid_invoice || ''} ${e.pid || ''} ${e.dot_inv_key || ''} ${e.person || ''} ${e.issue || ''} ${e.sheet || ''} ${e.remark || ''}`.toLowerCase();
+        const matchesSearch = (!q || searchStr.includes(q));
+        return matchesStatus && matchesSearch;
+    });
+
+    if (impactSortState.col) {
+        const dir = impactSortState.dir;
+        rows.sort((a, b) => {
+            if (impactSortState.col === 'outcome') {
+                const getFailCount = (item) => {
+                    if (item.status === 'Still Failing') {
+                        return (item.after?.fails != null) ? Number(item.after.fails) : 1;
+                    }
+                    if (item.status === 'Fixed') return 0;
+                    return -1; // No QC Data
+                };
+                const fa = getFailCount(a);
+                const fb = getFailCount(b);
+                if (fa !== fb) {
+                    if (dir === 'desc') {
+                        // Max fail count first (e.g. 5, 4, 3, 2, 1, then Fixed (0), then No QC Data (-1))
+                        return fb - fa;
+                    } else {
+                        // Ascending: Fixed (0), then 1, 2, 3... and No QC Data (-1) at bottom
+                        if (fa === -1) return 1;
+                        if (fb === -1) return -1;
+                        return fa - fb;
+                    }
+                }
+                // Tie breaker: CT date desc
+                const da = a.ct || a.window_end || '';
+                const db = b.ct || b.window_end || '';
+                return db.localeCompare(da);
+            }
+            if (impactSortState.col === 'ct') {
+                const da = a.ct || a.window_end || '';
+                const db = b.ct || b.window_end || '';
+                return dir === 'desc' ? db.localeCompare(da) : da.localeCompare(db);
+            }
+            if (impactSortState.col === 'pid') {
+                const pa = (a.pid_invoice || a.key || a.pid || '').toLowerCase();
+                const pb = (b.pid_invoice || b.key || b.pid || '').toLowerCase();
+                return dir === 'desc' ? pb.localeCompare(pa) : pa.localeCompare(pb);
+            }
+            if (impactSortState.col === 'issue') {
+                const ia = (a.issue || '').toLowerCase();
+                const ib = (b.issue || '').toLowerCase();
+                return dir === 'desc' ? ib.localeCompare(ia) : ia.localeCompare(ib);
+            }
+            return 0;
+        });
+    }
+
+    // Update sort icons in impact-table thead
+    document.querySelectorAll('.impact-table th.sortable').forEach(th => {
+        const col = th.getAttribute('data-sort');
+        const icon = th.querySelector('.sort-icon');
+        if (icon) {
+            if (col === impactSortState.col) {
+                icon.textContent = impactSortState.dir === 'desc' ? '▼' : '▲';
+                icon.style.opacity = '1';
+                icon.style.color = 'var(--text-bright, #00F2FE)';
+            } else {
+                icon.textContent = '↕';
+                icon.style.opacity = '0.5';
+                icon.style.color = '';
+            }
+        }
+    });
+
+    const countEl = document.getElementById('impact-count');
+    if (countEl) countEl.innerText = `${rows.length} of ${impactData.entries.length} entries`;
+
+    const tbody = document.getElementById('impact-tbody');
+    if (!tbody) return;
+
+    if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted" style="padding: 2.5rem;">No corrections match the current filters</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = rows.map(e => {
+        const statusSlug = (e.status || 'unknown').toLowerCase().replace(/\s+/g, '-');
+        const ctDisplay = e.ct ? e.ct.slice(0, 16) : (e.window_end ? fdate(e.window_end) : '--');
+        const keyDisplay = e.pid_invoice || e.key || e.pid || '--';
+        const devVal = (e.deviation_pct !== null && e.deviation_pct !== undefined && !isNaN(e.deviation_pct)) ? e.deviation_pct : null;
+
+        // Consolidated outcome badge based on actual post-correction shape fail count
+        let outcomeDetail = '';
+        if (e.status === 'Fixed') {
+            outcomeDetail = `<small class="outcome-sub text-green">0 shape fails</small>`;
+        } else if (e.status === 'Still Failing') {
+            const fc = e.after?.fails || 0;
+            const word = fc === 1 ? 'shape fail' : 'shape fails';
+            outcomeDetail = `<small class="outcome-sub text-red">${fc} ${word}</small>`;
+        }
+
+        return `<tr>
+            <td class="cell-pid" title="${escHtml(e.remark || '')}">
+                <strong class="cursor-pointer text-blue pid-link" onclick="quickLookupPID('${escHtml(e.pid_invoice || e.key || e.pid || '')}')">${escHtml(keyDisplay)}</strong>
+            </td>
+            <td class="cell-ct"><span class="ct-date">${escHtml(ctDisplay)}</span></td>
+            <td class="cell-issue">
+                <span class="issue-pill">${escHtml(e.issue || '--')}</span>
+                ${devVal !== null ? `<small class="dev-sub">${devVal}%</small>` : ''}
+            </td>
+            <td class="dim-cell">${dim(e.dims?.['A'])}</td>
+            <td class="dim-cell">${dim(e.dims?.['B'])}</td>
+            <td class="dim-cell">${dim(e.dims?.['CIRC R'])}</td>
+            <td class="dim-cell">${dim(e.dims?.['CIRC L'])}</td>
+            <td class="cell-outcome">
+                <span class="tag-status tag-status-${statusSlug}">${escHtml(e.status || '--')}</span>
+                ${outcomeDetail}
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+function setupImpactTableSorting() {
+    document.querySelectorAll('.impact-table th.sortable').forEach(th => {
+        th.addEventListener('click', () => {
+            const col = th.getAttribute('data-sort');
+            if (!col) return;
+            if (impactSortState.col === col) {
+                impactSortState.dir = (impactSortState.dir === 'desc') ? 'asc' : 'desc';
+            } else {
+                impactSortState.col = col;
+                // Default to descending for outcome & ct so max fail count or newest date shows first
+                impactSortState.dir = (col === 'outcome' || col === 'ct') ? 'desc' : 'asc';
+            }
+            renderImpactTable();
+        });
+    });
 }
 
 async function saveImpactSettings() {
@@ -1441,8 +1811,10 @@ async function saveImpactSettings() {
     });
     btn.disabled = true; msg.innerText = 'Recalculating... this takes 20-30 seconds';
     try {
-        const res = await fetch('/api/impact/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sheet_windows: wins, min_volume: parseInt(document.getElementById('impact-min-volume').value), fail_threshold: parseInt(document.getElementById('impact-threshold').value) }) });
+        const res = await fetch('/api/impact/settings', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sheet_windows: wins, min_volume: parseInt(document.getElementById('impact-min-volume').value), fail_threshold: parseInt(document.getElementById('impact-threshold').value) })
+        });
         if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Save failed');
         impactData = await res.json(); renderImpact(); msg.innerText = 'Saved ✓';
         fetchMetrics();
@@ -1462,7 +1834,7 @@ async function checkPidInvoice() {
             <strong>${escHtml(r.key)}</strong> ${r.in_qc_data ? '' : '<span class="text-muted">(not in the loaded QC exports)</span>'}
             <div>Period A: ${r.periods['Period A'].fails} fails of ${r.periods['Period A'].qc_done} QC'd (${nv(r.periods['Period A'].rate)}%) &nbsp;|&nbsp; Period B: ${r.periods['Period B'].fails} fails of ${r.periods['Period B'].qc_done} QC'd (${nv(r.periods['Period B'].rate)}%)</div>
             <div>${r.corrections.length ? r.corrections.map(c => `Corrected in <strong>${escHtml((c.sheet || '').trim())}</strong> (${fdate(c.date)}) by ${escHtml(c.person) || '-'}: ` +
-                Object.entries(c.dims).map(([k, v]) => `${escHtml(k)} ${nv(v[0])}→${nv(v[1])}`).join(', ') + (c.remark ? ` · <em>${escHtml(c.remark)}</em>` : '')).join('<br>') : '<span class="text-muted">No correction on record</span>'}</div>
+            Object.entries(c.dims).map(([k, v]) => `${escHtml(k)} ${nv(v[0])}→${nv(v[1])}`).join(', ') + (c.remark ? ` · <em>${escHtml(c.remark)}</em>` : '')).join('<br>') : '<span class="text-muted">No correction on record</span>'}</div>
             <div>${r.lists.length ? r.lists.map(l => `On list <strong>${escHtml(l.list)}</strong>: ${nv(l.fails)} fails of ${nv(l.qc_done)} · status ${escHtml(l.status) || 'pending'}`).join('<br>') : '<span class="text-muted">Not on your failing lists</span>'}</div>
             <a class="cursor-pointer text-blue" onclick="quickLookupPID('${escHtml(r.key)}')">Open full history</a></div>`).join('');
     } catch (e) { out.innerHTML = `<div class="master-warning-item">Error: ${escHtml(e.message)}</div>`; }
@@ -1481,11 +1853,11 @@ function setupRecentCorrectionsLog() {
     if (btnExport) {
         btnExport.addEventListener('click', () => {
             const from = document.getElementById('sc-date-from') ? document.getElementById('sc-date-from').value : '';
-            const to   = document.getElementById('sc-date-to') ? document.getElementById('sc-date-to').value : '';
+            const to = document.getElementById('sc-date-to') ? document.getElementById('sc-date-to').value : '';
             let url = '/api/shape/export/corrections_log';
             const params = [];
             if (from) params.push(`date_from=${from}`);
-            if (to)   params.push(`date_to=${to}`);
+            if (to) params.push(`date_to=${to}`);
             if (params.length) url += '?' + params.join('&');
             window.location = url;
         });
@@ -1556,7 +1928,7 @@ function renderRecentCorrections(list) {
         return `
             <tr>
                 <td style="white-space: nowrap; font-size: 0.78rem; color: var(--text-muted);">${escHtml(tsStr)}</td>
-                <td><strong class="text-blue cursor-pointer" onclick="quickLookupPID('${escHtml(entry.pid || '')}')">${escHtml(pidDisplay)}</strong></td>
+                <td><strong class="text-blue cursor-pointer" onclick="quickLookupPID('${escHtml(entry.pid_invoice || entry.pid || '')}')">${escHtml(pidDisplay)}</strong></td>
                 <td><span class="badge-corr-type ${typeClass}">${escHtml(type)}</span></td>
                 <td>${escHtml(entry.issue_raw || 'Shape Correction')}</td>
                 <td>${escHtml(entry.done_by || '--')}</td>
